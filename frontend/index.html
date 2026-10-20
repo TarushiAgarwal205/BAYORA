@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bayora | Security Gateway</title>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 32px 18px;
+      background: #0b1120;
+      color: #e5e7eb;
+      font-family: Arial, sans-serif;
+    }
+
+    main {
+      max-width: 760px;
+      margin: auto;
+    }
+
+    .panel {
+      background: #131d30;
+      border: 1px solid #29364d;
+      border-radius: 14px;
+      padding: 24px;
+      margin-top: 20px;
+    }
+
+    h1 { margin-bottom: 6px; }
+    .muted { color: #9caec5; line-height: 1.5; }
+
+    .status {
+      display: inline-block;
+      padding: 7px 12px;
+      border-radius: 20px;
+      background: #25344a;
+      font-size: 13px;
+    }
+
+    .online { color: #86efac; }
+    .offline { color: #fca5a5; }
+
+    label {
+      display: block;
+      margin: 16px 0 7px;
+      font-size: 14px;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #35445d;
+      background: #0b1120;
+      color: white;
+      font-size: 15px;
+    }
+
+    button {
+      margin-top: 20px;
+      padding: 12px 18px;
+      border: 0;
+      border-radius: 8px;
+      background: #60a5fa;
+      color: #081426;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:disabled { opacity: 0.6; }
+
+    #result {
+      margin-top: 20px;
+      padding: 16px;
+      border-radius: 10px;
+      background: #0b1120;
+      overflow-wrap: anywhere;
+    }
+
+    .allowed { color: #86efac; }
+    .blocked { color: #fca5a5; }
+
+    pre {
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>Bayora</h1>
+    <p class="muted">
+      Security Gateway · Red Team Policy Testing
+    </p>
+
+    <span id="serverStatus" class="status">
+      Checking backend...
+    </span>
+
+    <section class="panel">
+      <h2>Run Security Test</h2>
+      <p class="muted">
+        Submit a request and view the decision returned by
+        the Bayora backend.
+      </p>
+      <p class="muted">DEMO STUB: this decision is not produced by a real security test.</p>
+
+      <form id="testForm">
+        <label for="session">Session ID</label>
+        <input id="session" value="test-001" required>
+
+        <label for="role">Requester Role</label>
+        <select id="role">
+          <option value="red">Red Team</option>
+          <option value="blue">Blue Team</option>
+        </select>
+
+        <label for="resource">Target Resource</label>
+        <select id="resource">
+          <option value="test_endpoint">Test Endpoint</option>
+          <option value="blue_artifact">Blue Team Artifact</option>
+        </select>
+
+        <label for="action">Requested Action</label>
+        <select id="action">
+          <option value="run_test">Run Test</option>
+          <option value="read">Read</option>
+          <option value="delete">Delete</option>
+        </select>
+
+        <button id="submitButton" type="submit">
+          Run Policy Check
+        </button>
+      </form>
+
+      <div id="result" aria-live="polite">
+        Your test result will appear here.
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById("testForm");
+    const result = document.getElementById("result");
+    const status = document.getElementById("serverStatus");
+    const button = document.getElementById("submitButton");
+
+    async function checkHealth() {
+      try {
+        const response = await fetch("/health");
+
+        if (!response.ok) {
+          throw new Error("Backend health check failed");
+        }
+
+        status.textContent = "Backend connected";
+        status.className = "status online";
+      } catch (error) {
+        status.textContent = "Backend unavailable";
+        status.className = "status offline";
+      }
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const requestData = {
+        session_id: document.getElementById("session").value,
+        role: document.getElementById("role").value,
+        resource: document.getElementById("resource").value,
+        action: document.getElementById("action").value
+      };
+
+      button.disabled = true;
+      result.textContent = "Checking policy...";
+
+      try {
+        const response = await fetch("/test", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(requestData)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data.detail
+              ? JSON.stringify(data.detail)
+              : "Request failed"
+          );
+        }
+
+        const decision = document.createElement("h2");
+        decision.textContent = data.decision;
+        decision.className =
+          data.decision === "ALLOWED" ? "allowed" : "blocked";
+
+        const details = document.createElement("pre");
+        details.textContent = JSON.stringify(data, null, 2);
+
+        result.replaceChildren(decision, details);
+      } catch (error) {
+        result.textContent = "Error: " + error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    checkHealth();
+  </script>
+</body>
+</html>
