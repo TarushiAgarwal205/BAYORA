@@ -1,25 +1,31 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
-from backend.main import app
+from backend.main import create_app
 
 
-client = TestClient(app)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_health_returns_expected_body():
+@pytest.fixture
+def client(tmp_path):
+    with TestClient(create_app(audit_db_path=tmp_path / "stage1-audit.sqlite3")) as test_client:
+        yield test_client
+
+
+def test_health_returns_expected_body(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "healthy"}
 
 
-def test_home_returns_success():
+def test_home_returns_success(client):
     assert client.get("/").status_code == 200
 
 
-def test_test_route_accepts_valid_request_and_rejects_malformed_request():
+def test_test_route_accepts_valid_request_and_rejects_malformed_request(client):
     response = client.post(
         "/test",
         json={
@@ -38,7 +44,7 @@ def test_test_route_accepts_valid_request_and_rejects_malformed_request():
     assert client.post("/test", json={"session_id": "setup-test"}).status_code == 422
 
 
-def test_dashboard_serves_relocated_frontend():
+def test_dashboard_serves_relocated_frontend(client):
     response = client.get("/dashboard/")
     assert response.status_code == 200
     assert "<!DOCTYPE html>" in response.text

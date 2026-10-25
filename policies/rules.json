@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "rule_id": "red-approved-tests",
+      "effect": "ALLOW",
+      "role": "red",
+      "action": "run_approved_test",
+      "resource_match": {
+        "type": "exact",
+        "values": [
+          "test:authorized_access",
+          "test:unauthorized_artifact_access",
+          "test:session_isolation"
+        ]
+      }
+    },
+    {
+      "rule_id": "red-deny-blue-artifacts",
+      "effect": "DENY",
+      "role": "red",
+      "action": "read_artifact",
+      "resource_match": {
+        "type": "prefix",
+        "value": "blue:"
+      }
+    },
+    {
+      "rule_id": "blue-read-blue-artifacts",
+      "effect": "ALLOW",
+      "role": "blue",
+      "action": "read_artifact",
+      "resource_match": {
+        "type": "prefix",
+        "value": "blue:"
+      }
+    }
+  ]
+}
