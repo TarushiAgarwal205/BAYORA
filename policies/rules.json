@@ -16,6 +16,20 @@
       }
     },
     {
+      "rule_id": "red-approved-client-llm",
+      "effect": "ALLOW",
+      "role": "red",
+      "action": "generate_client_response",
+      "resource_match": {
+        "type": "exact",
+        "values": [
+          "test:authorized_access",
+          "test:unauthorized_artifact_access",
+          "test:session_isolation"
+        ]
+      }
+    },
+    {
       "rule_id": "red-deny-blue-artifacts",
       "effect": "DENY",
       "role": "red",

@@ -1,17 +1,26 @@
 from contextlib import asynccontextmanager
 import hashlib
+import hmac
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from fastapi.staticfiles import StaticFiles
 
 from backend.audit_store import AuditStore, utc_timestamp
 from backend.blue_client import BlueServiceClient
-from backend.config import AUDIT_DB_PATH, BLUE_SERVICE_TOKEN, BLUE_SERVICE_URL
+from backend.config import (
+    AUDIT_DB_PATH,
+    BLUE_SERVICE_TOKEN,
+    BLUE_SERVICE_URL,
+    GATEWAY_CALLER_TOKENS,
+    LLM_MODEL,
+    OPENROUTER_API_KEY,
+)
+from backend.llm_client import LLMConfigurationError, LLMProviderError, OpenRouterClient
 from backend.policy import PolicyEngine
 from blue.service import RESOURCE_CLASSIFICATION, RESOURCE_ID, RESOURCE_SHA256
 
@@ -43,9 +52,54 @@ class PolicyRequest(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
-def create_app(rules_path=RULES_PATH, audit_db_path=AUDIT_DB_PATH, audit_store=None, blue_client=None):
+class LLMRequest(PolicyRequest):
+    prompt: str = Field(min_length=1, max_length=20000)
+
+
+def create_app(
+    rules_path=RULES_PATH,
+    audit_db_path=AUDIT_DB_PATH,
+    audit_store=None,
+    blue_client=None,
+    llm_client=None,
+    gateway_caller_tokens=None,
+):
     store = audit_store or AuditStore(audit_db_path)
     resource_client = blue_client or BlueServiceClient(BLUE_SERVICE_URL, BLUE_SERVICE_TOKEN)
+    model_client = llm_client or OpenRouterClient(OPENROUTER_API_KEY, LLM_MODEL)
+    caller_tokens = (
+        GATEWAY_CALLER_TOKENS if gateway_caller_tokens is None else gateway_caller_tokens
+    )
+
+    def authenticate_resource_caller(authorization: str | None = Header(default=None)):
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Gateway caller authentication required")
+
+        configured_tokens = {
+            role: token for role, token in caller_tokens.items()
+            if role in {"red", "blue"} and isinstance(token, str) and token
+        }
+        if not configured_tokens:
+            raise HTTPException(status_code=503, detail="Gateway caller authentication is not configured")
+        if (
+            len(set(configured_tokens.values())) != len(configured_tokens)
+            or any(not token.isascii() for token in configured_tokens.values())
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Gateway caller authentication configuration is invalid",
+            )
+
+        supplied_token = authorization.removeprefix("Bearer ")
+        if not supplied_token.isascii():
+            raise HTTPException(status_code=401, detail="Gateway caller authentication failed")
+        matches = [
+            role for role, expected_token in configured_tokens.items()
+            if hmac.compare_digest(supplied_token, expected_token)
+        ]
+        if len(matches) != 1:
+            raise HTTPException(status_code=401, detail="Gateway caller authentication failed")
+        return matches[0]
 
     @asynccontextmanager
     async def lifespan(application):
@@ -125,9 +179,13 @@ def create_app(rules_path=RULES_PATH, audit_db_path=AUDIT_DB_PATH, audit_store=N
         }
 
     @application.post("/resource/read")
-    async def read_protected_resource(request: PolicyRequest):
+    async def read_protected_resource(
+        request: PolicyRequest,
+        caller_role: str = Depends(authenticate_resource_caller),
+    ):
         session_id = request.session_id or uuid4().hex
-        role = request.role.strip().lower()
+        # Keep the request field for API compatibility, but never trust it for access control.
+        role = caller_role
         action = request.action.strip().lower()
         resource = request.resource.strip().lower()
         decision = application.state.policy_engine.decide(role, action, resource)
@@ -221,6 +279,85 @@ def create_app(rules_path=RULES_PATH, audit_db_path=AUDIT_DB_PATH, audit_store=N
             "resource_id": RESOURCE_ID,
             "classification": payload["classification"],
             "content": content,
+        }
+
+    @application.post("/llm/generate")
+    async def generate_llm_response(request: LLMRequest):
+        session_id = request.session_id or uuid4().hex
+        role = request.role.strip().lower()
+        action = request.action.strip().lower()
+        resource = request.resource.strip().lower()
+        decision = application.state.policy_engine.decide(role, action, resource)
+        event = {
+            "event_id": str(uuid4()),
+            "timestamp_utc": utc_timestamp(),
+            "session_id": session_id,
+            "role": role,
+            "action": action,
+            "resource": resource,
+            "decision": decision.decision,
+            "reason": decision.reason,
+            "matched_rule_id": decision.matched_rule_id,
+        }
+        if decision.decision != "ALLOW":
+            try:
+                application.state.audit_store.record(event)
+            except Exception as error:
+                raise HTTPException(status_code=503, detail="audit write failed; model was not called") from error
+            raise HTTPException(status_code=403, detail={
+                "event_id": event["event_id"],
+                "decision": "DENY",
+                "reason": decision.reason,
+                "operation_executed": False,
+                "observed_outcome": "NOT_EXECUTED",
+                "verification_result": "NOT_VERIFIED",
+                "security_outcome": "NOT_EVALUATED",
+            })
+
+        try:
+            application.state.audit_store.record_pending_operation(event)
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="audit write failed; model was not called") from error
+
+        try:
+            output = await model_client.generate(request.prompt)
+        except LLMConfigurationError as error:
+            await _finish_resource_audit(
+                application, event["event_id"], False, "NOT_EXECUTED", "NOT_VERIFIED"
+            )
+            raise HTTPException(status_code=503, detail="LLM integration is not configured") from error
+        except LLMProviderError as error:
+            if error.operation_executed is False:
+                await _finish_resource_audit(
+                    application, event["event_id"], False, "NOT_EXECUTED", "NOT_VERIFIED"
+                )
+            else:
+                await _finish_resource_audit(
+                    application, event["event_id"], None, "UNKNOWN", "NOT_VERIFIED"
+                )
+            raise HTTPException(status_code=502, detail="LLM provider is unavailable or returned an invalid response") from error
+        except Exception as error:
+            await _finish_resource_audit(
+                application, event["event_id"], None, "UNKNOWN", "NOT_VERIFIED"
+            )
+            raise HTTPException(status_code=502, detail="LLM request failed") from error
+
+        try:
+            application.state.audit_store.complete_operation(
+                event["event_id"], True, "SUCCEEDED", "NOT_VERIFIED"
+            )
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="audit finalization failed; model output withheld") from error
+        return {
+            "event_id": event["event_id"],
+            "session_id": session_id,
+            "decision": "ALLOW",
+            "model": model_client.model,
+            "model_output": output,
+            "operation_executed": True,
+            "observed_outcome": "SUCCEEDED",
+            "verification_result": "NOT_VERIFIED",
+            "security_outcome": "NOT_EVALUATED",
         }
 
     @application.get("/policy/rules")
