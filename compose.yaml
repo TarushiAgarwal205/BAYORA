@@ -1,7 +1,15 @@
 services:
   gateway:
     build: .
-    command: ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command:
+      - python
+      - -m
+      - uvicorn
+      - backend.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
     environment:
       BAYORA_HOST: 0.0.0.0
       BAYORA_PORT: "8000"
@@ -10,31 +18,76 @@ services:
       BAYORA_GATEWAY_RED_TOKEN: ${BAYORA_GATEWAY_RED_TOKEN:-}
       BAYORA_GATEWAY_BLUE_TOKEN: ${BAYORA_GATEWAY_BLUE_TOKEN:-}
       BAYORA_AUDIT_DB: /app/data/bayora_audit.sqlite3
-      BAYORA_OPENROUTER_API_KEY: ${BAYORA_OPENROUTER_API_KEY:-}
+      BAYORA_LLM_SERVICE_URL: http://llm:8002
+      BAYORA_LLM_SERVICE_TOKEN: ${BAYORA_LLM_SERVICE_TOKEN:?Set BAYORA_LLM_SERVICE_TOKEN in .env}
       BAYORA_LLM_MODEL: ${BAYORA_LLM_MODEL:-openrouter/free}
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
     depends_on:
-      - blue
+      blue:
+        condition: service_started
+      llm:
+        condition: service_healthy
     networks:
       - bayora-local
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
       interval: 10s
       timeout: 5s
       retries: 5
 
   blue:
     build: .
-    command: ["python", "-m", "uvicorn", "blue.service:app", "--host", "0.0.0.0", "--port", "8001"]
+    command:
+      - python
+      - -m
+      - uvicorn
+      - blue.service:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
     environment:
       BAYORA_BLUE_SERVICE_TOKEN: ${BAYORA_BLUE_SERVICE_TOKEN:?Set BAYORA_BLUE_SERVICE_TOKEN in .env}
     expose:
       - "8001"
     networks:
       - bayora-local
+
+  llm:
+    build: .
+    command:
+      - python
+      - -m
+      - uvicorn
+      - llm.service:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8002"
+    environment:
+      BAYORA_OPENROUTER_API_KEY: ${BAYORA_OPENROUTER_API_KEY:-}
+      BAYORA_LLM_MODEL: ${BAYORA_LLM_MODEL:-openrouter/free}
+      BAYORA_LLM_SERVICE_TOKEN: ${BAYORA_LLM_SERVICE_TOKEN:?Set BAYORA_LLM_SERVICE_TOKEN in .env}
+    expose:
+      - "8002"
+    networks:
+      - bayora-local
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   red:
     build: .

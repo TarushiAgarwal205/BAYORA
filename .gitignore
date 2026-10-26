@@ -15,3 +15,6 @@ data/*
 # Local environment and secrets
 .env.*
 !.env.example
+
+# Temporary pytest files
+.pytest-tmp/

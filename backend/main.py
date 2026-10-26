@@ -20,7 +20,11 @@ from backend.config import (
     LLM_MODEL,
     OPENROUTER_API_KEY,
 )
-from backend.llm_client import LLMConfigurationError, LLMProviderError, OpenRouterClient
+from backend.llm_client import (
+    LLMConfigurationError,
+    LLMProviderError,
+    create_llm_client,
+)
 from backend.policy import PolicyEngine
 from blue.service import RESOURCE_CLASSIFICATION, RESOURCE_ID, RESOURCE_SHA256
 
@@ -56,6 +60,7 @@ class LLMRequest(PolicyRequest):
     prompt: str = Field(min_length=1, max_length=20000)
 
 
+
 def create_app(
     rules_path=RULES_PATH,
     audit_db_path=AUDIT_DB_PATH,
@@ -66,7 +71,7 @@ def create_app(
 ):
     store = audit_store or AuditStore(audit_db_path)
     resource_client = blue_client or BlueServiceClient(BLUE_SERVICE_URL, BLUE_SERVICE_TOKEN)
-    model_client = llm_client or OpenRouterClient(OPENROUTER_API_KEY, LLM_MODEL)
+    model_client = llm_client or create_llm_client()
     caller_tokens = (
         GATEWAY_CALLER_TOKENS if gateway_caller_tokens is None else gateway_caller_tokens
     )
