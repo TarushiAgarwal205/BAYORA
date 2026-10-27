@@ -6,7 +6,9 @@
   <title>Bayora | Security Gateway</title>
 
   <style>
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
     body {
       margin: 0;
@@ -17,7 +19,7 @@
     }
 
     main {
-      max-width: 760px;
+      max-width: 900px;
       margin: auto;
     }
 
@@ -29,19 +31,41 @@
       margin-top: 20px;
     }
 
-    h1 { margin-bottom: 6px; }
-    .muted { color: #9caec5; line-height: 1.5; }
+    h1 {
+      margin-bottom: 6px;
+    }
+
+    h2 {
+      margin-top: 0;
+    }
+
+    .muted {
+      color: #9caec5;
+      line-height: 1.6;
+    }
 
     .status {
       display: inline-block;
-      padding: 7px 12px;
+      padding: 8px 12px;
       border-radius: 20px;
       background: #25344a;
       font-size: 13px;
+      margin-top: 8px;
     }
 
-    .online { color: #86efac; }
-    .offline { color: #fca5a5; }
+    .online,
+    .allowed {
+      color: #86efac;
+    }
+
+    .offline,
+    .blocked {
+      color: #fca5a5;
+    }
+
+    .checking {
+      color: #fde68a;
+    }
 
     label {
       display: block;
@@ -49,7 +73,8 @@
       font-size: 14px;
     }
 
-    input, select {
+    input,
+    select {
       width: 100%;
       padding: 12px;
       border-radius: 8px;
@@ -70,22 +95,68 @@
       cursor: pointer;
     }
 
-    button:disabled { opacity: 0.6; }
+    button:hover:not(:disabled) {
+      background: #93c5fd;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
 
     #result {
       margin-top: 20px;
-      padding: 16px;
+      padding: 18px;
+      border: 1px solid #29364d;
       border-radius: 10px;
       background: #0b1120;
       overflow-wrap: anywhere;
+      line-height: 1.6;
     }
 
-    .allowed { color: #86efac; }
-    .blocked { color: #fca5a5; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .metric {
+      padding: 14px;
+      border-radius: 9px;
+      background: #131d30;
+      border: 1px solid #29364d;
+      overflow-wrap: anywhere;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 8px;
+      overflow-wrap: anywhere;
+    }
 
     pre {
       white-space: pre-wrap;
       line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .section-title {
+      margin-top: 24px;
+    }
+
+    .small {
+      font-size: 12px;
+    }
+
+    @media (max-width: 600px) {
+      body {
+        padding: 20px 12px;
+      }
+
+      .panel {
+        padding: 18px;
+      }
     }
   </style>
 </head>
@@ -93,43 +164,81 @@
 <body>
   <main>
     <h1>Bayora</h1>
+
     <p class="muted">
       Security Gateway · Red Team Policy Testing
     </p>
 
-    <span id="serverStatus" class="status">
+    <span
+      id="serverStatus"
+      class="status checking"
+      role="status"
+      aria-live="polite"
+    >
       Checking backend...
     </span>
 
     <section class="panel">
-      <h2>Run Security Test</h2>
+      <h2>Policy Evaluation</h2>
+
       <p class="muted">
-        Submit a request and view the decision returned by
-        the Bayora backend.
+        Submit a request to the Bayora policy engine. The gateway evaluates
+        configured rules and records the decision in its audit store.
+        Policy evaluation does not execute the requested operation.
       </p>
-      <p class="muted">DEMO STUB: this decision is not produced by a real security test.</p>
 
       <form id="testForm">
         <label for="session">Session ID</label>
-        <input id="session" value="test-001" required>
+
+        <input
+          id="session"
+          value="test-001"
+          maxlength="64"
+          pattern="[A-Za-z0-9_-]+"
+          required
+        >
 
         <label for="role">Requester Role</label>
+
         <select id="role">
           <option value="red">Red Team</option>
           <option value="blue">Blue Team</option>
         </select>
 
         <label for="resource">Target Resource</label>
+
         <select id="resource">
-          <option value="test_endpoint">Test Endpoint</option>
-          <option value="blue_artifact">Blue Team Artifact</option>
+          <option value="test:authorized_access">
+            Authorized Access Test
+          </option>
+
+          <option value="test:unauthorized_artifact_access">
+            Unauthorized Artifact Access Test
+          </option>
+
+          <option value="test:session_isolation">
+            Session Isolation Test
+          </option>
+
+          <option value="blue:artifact">
+            Blue Team Artifact
+          </option>
         </select>
 
         <label for="action">Requested Action</label>
+
         <select id="action">
-          <option value="run_test">Run Test</option>
-          <option value="read">Read</option>
-          <option value="delete">Delete</option>
+          <option value="run_approved_test">
+            Run Approved Test
+          </option>
+
+          <option value="generate_client_response">
+            Generate Client Response
+          </option>
+
+          <option value="read_artifact">
+            Read Artifact
+          </option>
         </select>
 
         <button id="submitButton" type="submit">
@@ -138,82 +247,228 @@
       </form>
 
       <div id="result" aria-live="polite">
-        Your test result will appear here.
+        Submit a request to see the policy decision.
       </div>
+    </section>
+
+    <section class="panel">
+      <h2>Latest Audit Evidence</h2>
+
+      <p class="muted">
+        Details returned by the gateway for the latest policy evaluation.
+      </p>
+
+      <div class="grid">
+        <div class="metric">
+          Decision
+          <strong id="auditDecision">—</strong>
+        </div>
+
+        <div class="metric">
+          Matched Rule
+          <strong id="auditRule">—</strong>
+        </div>
+
+        <div class="metric">
+          Session ID
+          <strong id="auditSession">—</strong>
+        </div>
+
+        <div class="metric">
+          Event ID
+          <strong id="auditEvent">—</strong>
+        </div>
+
+        <div class="metric">
+          Operation Outcome
+          <strong id="auditOutcome">—</strong>
+        </div>
+
+        <div class="metric">
+          Verification
+          <strong id="auditVerification">—</strong>
+        </div>
+      </div>
+
+      <h3 class="section-title">Decision Details</h3>
+
+      <pre id="auditReason" class="muted">No decision recorded in this dashboard session yet.</pre>
+
+      <p class="muted small">
+        This panel displays the latest response received by this browser.
+        It is not a complete audit-log viewer or an independent integrity check.
+      </p>
     </section>
   </main>
 
   <script>
+    "use strict";
+
+    const API_BASE = window.location.origin;
+
     const form = document.getElementById("testForm");
     const result = document.getElementById("result");
-    const status = document.getElementById("serverStatus");
+    const statusBadge = document.getElementById("serverStatus");
     const button = document.getElementById("submitButton");
 
-    async function checkHealth() {
-      try {
-        const response = await fetch("/health");
+    const fields = {
+      decision: document.getElementById("auditDecision"),
+      rule: document.getElementById("auditRule"),
+      session: document.getElementById("auditSession"),
+      event: document.getElementById("auditEvent"),
+      outcome: document.getElementById("auditOutcome"),
+      verification: document.getElementById("auditVerification"),
+      reason: document.getElementById("auditReason")
+    };
 
-        if (!response.ok) {
-          throw new Error("Backend health check failed");
+    // Send an HTTP request and parse the JSON response.
+    async function fetchJson(url, options = {}) {
+      const response = await fetch(url, options);
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const detail =
+          typeof data.detail === "string"
+            ? data.detail
+            : `Request failed with HTTP ${response.status}`;
+
+        throw new Error(detail);
+      }
+
+      return data;
+    }
+
+    // Update the backend connection indicator.
+    function setBackendStatus(connected, message) {
+      statusBadge.textContent = message;
+
+      statusBadge.classList.remove(
+        "online",
+        "offline",
+        "checking"
+      );
+
+      statusBadge.classList.add(
+        connected ? "online" : "offline"
+      );
+    }
+
+    // Check the real gateway health endpoint.
+    async function checkBackend() {
+      statusBadge.textContent = "Checking backend...";
+
+      statusBadge.classList.remove("online", "offline");
+      statusBadge.classList.add("checking");
+
+      try {
+        const data = await fetchJson(`${API_BASE}/health`, {
+          method: "GET",
+          cache: "no-store"
+        });
+
+        if (data.status !== "healthy") {
+          throw new Error("Gateway health check did not return healthy.");
         }
 
-        status.textContent = "Backend connected";
-        status.className = "status online";
+        setBackendStatus(true, "Backend Connected");
       } catch (error) {
-        status.textContent = "Backend unavailable";
-        status.className = "status offline";
+        setBackendStatus(false, "Backend Disconnected");
+        console.error("Backend health check failed:", error);
       }
     }
 
-    form.addEventListener("submit", async (event) => {
+    // Show the policy decision and the evidence returned by the gateway.
+    function displayDecision(data) {
+      const decision = String(data.decision || "UNKNOWN").toUpperCase();
+
+      result.replaceChildren();
+
+      const heading = document.createElement("h3");
+      heading.textContent = `Decision: ${decision}`;
+      heading.className =
+        decision === "ALLOW" ? "allowed" : "blocked";
+
+      const reason = document.createElement("p");
+      reason.textContent = data.reason || "No decision details returned.";
+
+      const rule = document.createElement("p");
+      rule.textContent =
+        `Matched Rule: ${data.matched_rule_id || "Not provided"}`;
+
+      result.append(heading, reason, rule);
+
+      fields.decision.textContent = decision;
+      fields.rule.textContent = data.matched_rule_id || "—";
+      fields.session.textContent = data.session_id || "—";
+      fields.event.textContent = data.event_id || "—";
+      fields.outcome.textContent = data.observed_outcome || "—";
+      fields.verification.textContent =
+        data.verification_result || "—";
+
+      fields.reason.textContent = data.reason || "No reason provided.";
+    }
+
+    // Submit a policy evaluation request.
+    form.addEventListener("submit", async function (event) {
       event.preventDefault();
 
-      const requestData = {
-        session_id: document.getElementById("session").value,
-        role: document.getElementById("role").value,
-        resource: document.getElementById("resource").value,
-        action: document.getElementById("action").value
-      };
+      if (!form.reportValidity()) {
+        return;
+      }
 
       button.disabled = true;
-      result.textContent = "Checking policy...";
+      button.textContent = "Checking Policy...";
+
+      result.textContent = "Submitting request to the policy engine...";
 
       try {
-        const response = await fetch("/test", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(requestData)
-        });
+        const payload = {
+          session_id: document.getElementById("session").value.trim(),
+          role: document.getElementById("role").value,
+          resource: document.getElementById("resource").value,
+          action: document.getElementById("action").value
+        };
 
-        const data = await response.json();
+        const data = await fetchJson(
+          `${API_BASE}/policy/decide`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+          }
+        );
 
-        if (!response.ok) {
-          throw new Error(
-            data.detail
-              ? JSON.stringify(data.detail)
-              : "Request failed"
-          );
-        }
-
-        const decision = document.createElement("h2");
-        decision.textContent = data.decision;
-        decision.className =
-          data.decision === "ALLOWED" ? "allowed" : "blocked";
-
-        const details = document.createElement("pre");
-        details.textContent = JSON.stringify(data, null, 2);
-
-        result.replaceChildren(decision, details);
+        displayDecision(data);
+        setBackendStatus(true, "Backend Connected");
       } catch (error) {
-        result.textContent = "Error: " + error.message;
+        console.error("Policy evaluation failed:", error);
+
+        result.replaceChildren();
+
+        const heading = document.createElement("h3");
+        heading.textContent = "Request Failed";
+        heading.className = "blocked";
+
+        const message = document.createElement("p");
+        message.textContent = error.message || "An unexpected error occurred.";
+
+        result.append(heading, message);
+
+        setBackendStatus(false, "Backend Disconnected");
       } finally {
         button.disabled = false;
+        button.textContent = "Run Policy Check";
       }
     });
 
-    checkHealth();
+    // Run the health check immediately when the page loads.
+    checkBackend();
+
+    // Refresh the status periodically.
+    setInterval(checkBackend, 15000);
   </script>
 </body>
 </html>
