@@ -29,6 +29,16 @@ Status updated 2026-10-27. The dashboard remains served at `/dashboard/`. **DEMO
 - Docker CLI was not available; Compose parsing, image builds, container startup, network behavior, and restart persistence were not verified. Current Compose configuration gives only the LLM service an ordinary egress bridge; it is not restricted to the OpenRouter hostname.
 - No live OpenRouter request was made. Frontend behavior is covered by source/API contract tests; no browser automation or JavaScript runtime was available.
 
+## Release verification follow-up — 2026-10-27
+
+- Full suite: `venv\Scripts\python.exe -m pytest -q --basetemp .pytest-run-codex-20261027T222000Z -p no:cacheprovider` — **102 passed, 1 Starlette/httpx deprecation warning**. Two earlier full runs also passed 102 tests each.
+- `venv\Scripts\python.exe -m pip check`: **No broken requirements found**.
+- `git diff --check`: **exit 0**. Git printed access-denied notices for the three pre-existing `.pytest-tmp/` deletions; those paths were not read, restored, or changed.
+- The current `compose.yaml` has one `driver: bridge` entry for `llm-egress`. Its other quoting and spacing changes remain user changes. The committed `origin/main` already had a single driver entry.
+- Docker CLI is unavailable in this environment. Compose parsing, image builds, container startup, network behavior, health checks, and runtime integration remain **NOT VERIFIED**.
+- Dependency security scanners and lint/type-check tools (`pip-audit`, Bandit, Ruff, mypy) are not installed; no packages were installed. No live OpenRouter request was made.
+- The three `.pytest-run-codex-*` directories contain local test output and are ignored by the new narrow `.gitignore` rule; they were not deleted. The three pre-existing `.pytest-tmp/` deletions remain intact.
+
 ## Limitations
 
 Gateway and admin bearer tokens are shared prototype credentials without user accounts, expiry, or rotation. Prompt detection is deterministic pattern matching and may miss attacks or flag benign prompts. Scenario coverage is fixed and local. The audit chain is unkeyed, so a privileged database writer can recompute it. Model output and scenario results do not establish general security. Docker Compose supplies basic local network boundaries, not a complete sandbox. `/test` remains a demo stub.

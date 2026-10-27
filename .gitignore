@@ -18,3 +18,4 @@ data/*
 
 # Temporary pytest files
 .pytest-tmp/
+.pytest-run-codex-*/
