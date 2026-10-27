@@ -12,7 +12,7 @@ Status updated 2026-10-27. The dashboard remains served at `/dashboard/`. **DEMO
 | Security test scenario library, local runner integration, audited JSON evidence | IMPLEMENTED AND TESTED (four fixed scenarios; artifact hash checked against audit metadata) |
 | Admin incident search, filtering, event detail, related evidence, JSON export | IMPLEMENTED AND TESTED (separate admin credential; audit integrity required) |
 | Validated persistent detection configuration | IMPLEMENTED AND TESTED (only medium-severity action and denial threshold are tunable; required controls are immutable) |
-| SQLite audit outcomes, role/session fields, integrity-chain verification | IMPLEMENTED AND TESTED (unkeyed SHA-256 chain; missing marker and tampering fail closed) |
+| SQLite audit outcomes, role/session fields, SHA-256 chain plus HMAC checkpoint | IMPLEMENTED AND TESTED (paired tail deletion detected while checkpoint/key remain intact; missing or mismatched state fails closed; Gateway/host compromise and matching-pair rollback remain out of scope) |
 | Anomaly indicators and evidence summaries | IMPLEMENTED AND TESTED (fixed heuristics, not comprehensive detection) |
 | OpenRouter integration | IMPLEMENTED AND TESTED WITH MOCKS (no live provider request verified) |
 | Compose Gateway, Blue, LLM, and Red services | CONFIGURED; Gateway is attached only to internal service networks; Docker CLI unavailable, so runtime egress and published-port access are not verified |
@@ -41,4 +41,12 @@ Status updated 2026-10-27. The dashboard remains served at `/dashboard/`. **DEMO
 
 ## Limitations
 
-Gateway and admin bearer tokens are shared prototype credentials without user accounts, expiry, or rotation. Prompt detection is deterministic pattern matching and may miss attacks or flag benign prompts. Scenario coverage is fixed and local. The audit chain is unkeyed, so a privileged database writer can recompute it. Model output and scenario results do not establish general security. Docker Compose supplies basic local network boundaries, not a complete sandbox. `/test` remains a demo stub.
+Gateway and admin bearer tokens are shared prototype credentials without user accounts, expiry, or rotation. Prompt detection is deterministic pattern matching and may miss attacks or flag benign prompts. Scenario coverage is fixed and local. The audit revision chain is SHA-256 with an HMAC checkpoint in separate persistent storage; it detects changes to the DB head while the checkpoint and key remain intact, but does not resist a compromised Gateway or host administrator, or rollback of a matching older database/checkpoint pair. Model output and scenario results do not establish general security. Docker Compose supplies basic local network boundaries, not a complete sandbox. `/test` remains a demo stub.
+
+## Audit checkpoint update — 2026-10-28
+
+- Full Python suite: **132 passed, 1 existing Starlette/httpx deprecation warning**.
+- `venv\Scripts\python.exe -m pip check`: **No broken requirements found**.
+- Scoped `git diff --check` for the audit feature files: **passed**. The full-tree check reports access denied on the three pre-existing `.pytest-tmp/` deletions, which were preserved.
+- Docker CLI is unavailable, so Compose validation and container runtime verification were not performed.
+- `BAYORA_AUDIT_CHECKPOINT_KEY` is not configured in the current local environment. Configure and back up a private key of at least 32 bytes before starting the Gateway with this feature.

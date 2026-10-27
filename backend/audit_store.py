@@ -1,9 +1,14 @@
 import hashlib
+import hmac
 import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
+
+from backend.audit_checkpoint import AuditCheckpoint, CheckpointError
+from backend.config import AUDIT_CHECKPOINT_KEY
 
 
 class AuditStore:
@@ -16,8 +21,14 @@ class AuditStore:
         "verification_result", "operation_executed",
     )
 
-    def __init__(self, database_path: Path):
+    def __init__(self, database_path: Path, checkpoint_path=None, checkpoint_key=None):
         self.database_path = Path(database_path)
+        if checkpoint_path is None:
+            checkpoint_path = self.database_path.with_suffix(".checkpoint.sqlite3")
+        self.checkpoint = AuditCheckpoint(
+            checkpoint_path,
+            AUDIT_CHECKPOINT_KEY if checkpoint_key is None else checkpoint_key,
+        )
 
     @contextmanager
     def _connection(self):
@@ -32,8 +43,11 @@ class AuditStore:
         finally:
             connection.close()
 
-    def initialize(self):
+    def initialize(self, *, allow_checkpoint_bootstrap=False):
+        self.checkpoint.validate_key()
+        database_was_new = not self.database_path.exists()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_bootstrap = None
         with self._connection() as connection:
             existing_tables = {
                 row["name"]
@@ -111,14 +125,62 @@ class AuditStore:
                     "audit integrity initialization marker is invalid"
                 )
 
+            local = self._verify_local_integrity_connection(connection)
+            if not local["valid"]:
+                raise sqlite3.DatabaseError(
+                    "audit integrity verification failed during initialization"
+                )
+            database_id_row = connection.execute(
+                "SELECT value FROM audit_integrity_meta WHERE key = 'database_id'"
+            ).fetchone()
+            checkpoint_exists = self.checkpoint.path.is_file()
+            if database_id_row is None:
+                if not database_was_new and not allow_checkpoint_bootstrap:
+                    raise sqlite3.DatabaseError(
+                        "audit checkpoint identity is missing; explicit bootstrap is required"
+                    )
+                database_id = uuid4().hex
+                connection.execute(
+                    "INSERT INTO audit_integrity_meta (key, value) VALUES ('database_id', ?)",
+                    (database_id,),
+                )
+            else:
+                database_id = database_id_row["value"]
+
+            if not checkpoint_exists and not (database_was_new or allow_checkpoint_bootstrap):
+                raise sqlite3.DatabaseError(
+                    "audit checkpoint is missing; refusing to establish a new baseline"
+                )
+            if not checkpoint_exists:
+                checkpoint_bootstrap = (
+                    database_id, local["_head_sequence"], local["_head_hash"]
+                )
+
+        if checkpoint_bootstrap is not None:
+            try:
+                self.checkpoint.bootstrap(*checkpoint_bootstrap)
+            except CheckpointError as error:
+                raise sqlite3.DatabaseError(
+                    "audit checkpoint could not be initialized"
+                ) from error
+
+        result = self.verify_integrity()
+        if not result["valid"]:
+            raise sqlite3.DatabaseError("audit integrity verification failed during initialization")
+
     def record(self, event):
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._assert_integrity(connection)
-            # session_id is a correlation label scoped by the authenticated role.
-            # It is not an authentication credential and may be reused by another role.
-            self._insert_decision_event(connection, event)
-            return event
+        with self.checkpoint.writer_lock():
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                database_id, previous_sequence, previous_hash = self._assert_integrity(connection)
+                # session_id is a correlation label scoped by the authenticated role.
+                # It is not an authentication credential and may be reused by another role.
+                self._insert_decision_event(connection, event)
+                sequence, head_hash = self._current_head(connection)
+            self._advance_checkpoint(
+                database_id, previous_sequence, previous_hash, sequence, head_hash
+            )
+        return event
 
     def _insert_decision_event(self, connection, event):
         connection.execute(
@@ -141,23 +203,28 @@ class AuditStore:
     def record_pending_operation(self, event):
         if event["decision"] != "ALLOW":
             raise ValueError("only ALLOW decisions can start a resource operation")
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._assert_integrity(connection)
-            connection.execute(
-                """INSERT INTO audit_events (
-                    event_id, timestamp_utc, session_id, role, action, resource,
-                    decision, reason, matched_rule_id, observed_outcome,
-                    verification_result, operation_executed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'NOT_VERIFIED', NULL)""",
-                (
-                    event["event_id"], event["timestamp_utc"], event["session_id"],
-                    event["role"], event["action"], event["resource"], event["decision"],
-                    event["reason"], event["matched_rule_id"],
-                ),
+        with self.checkpoint.writer_lock():
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                database_id, previous_sequence, previous_hash = self._assert_integrity(connection)
+                connection.execute(
+                    """INSERT INTO audit_events (
+                        event_id, timestamp_utc, session_id, role, action, resource,
+                        decision, reason, matched_rule_id, observed_outcome,
+                        verification_result, operation_executed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'NOT_VERIFIED', NULL)""",
+                    (
+                        event["event_id"], event["timestamp_utc"], event["session_id"],
+                        event["role"], event["action"], event["resource"], event["decision"],
+                        event["reason"], event["matched_rule_id"],
+                    ),
+                )
+                self._append_integrity_entry(connection, event["event_id"])
+                sequence, head_hash = self._current_head(connection)
+            self._advance_checkpoint(
+                database_id, previous_sequence, previous_hash, sequence, head_hash
             )
-            self._append_integrity_entry(connection, event["event_id"])
-            return event
+        return event
 
     def complete_operation(
         self, event_id, operation_executed, observed_outcome, verification_result,
@@ -175,19 +242,24 @@ class AuditStore:
         if (operation_executed, observed_outcome, verification_result) not in valid:
             raise ValueError("invalid operation outcome or verification state")
         encoded_executed = None if operation_executed is None else int(operation_executed)
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._assert_integrity(connection)
-            cursor = connection.execute(
-                """UPDATE audit_events
-                   SET operation_executed = ?, observed_outcome = ?, verification_result = ?,
-                       reason = COALESCE(?, reason)
-                   WHERE event_id = ? AND decision = 'ALLOW' AND observed_outcome = 'PENDING'""",
-                (encoded_executed, observed_outcome, verification_result, reason, event_id),
+        with self.checkpoint.writer_lock():
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                database_id, previous_sequence, previous_hash = self._assert_integrity(connection)
+                cursor = connection.execute(
+                    """UPDATE audit_events
+                       SET operation_executed = ?, observed_outcome = ?, verification_result = ?,
+                           reason = COALESCE(?, reason)
+                       WHERE event_id = ? AND decision = 'ALLOW' AND observed_outcome = 'PENDING'""",
+                    (encoded_executed, observed_outcome, verification_result, reason, event_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("pending operation audit event not found")
+                self._append_integrity_entry(connection, event_id)
+                sequence, head_hash = self._current_head(connection)
+            self._advance_checkpoint(
+                database_id, previous_sequence, previous_hash, sequence, head_hash
             )
-            if cursor.rowcount != 1:
-                raise ValueError("pending operation audit event not found")
-            self._append_integrity_entry(connection, event_id)
 
     def _append_integrity_entry(self, connection, event_id):
         row = connection.execute(
@@ -213,7 +285,7 @@ class AuditStore:
             (event_id, snapshot_json, previous_hash, entry_hash),
         )
 
-    def _verify_integrity_connection(self, connection):
+    def _verify_local_integrity_connection(self, connection):
         initialized = connection.execute(
             "SELECT value FROM audit_integrity_meta WHERE key = 'baseline_initialized'"
         ).fetchone()
@@ -228,6 +300,7 @@ class AuditStore:
             "SELECT * FROM audit_integrity ORDER BY sequence"
         ).fetchall()
         previous_hash = self._ZERO_HASH
+        hashes_by_sequence = {0: self._ZERO_HASH}
         latest_snapshots = {}
         for expected_sequence, row in enumerate(rows, start=1):
             if row["sequence"] != expected_sequence:
@@ -269,6 +342,7 @@ class AuditStore:
                     "reason": "integrity entry hash does not match",
                 }
             previous_hash = row["entry_hash"]
+            hashes_by_sequence[expected_sequence] = previous_hash
             latest_snapshots[row["event_id"]] = snapshot
 
         current_rows = connection.execute("SELECT * FROM audit_events").fetchall()
@@ -282,21 +356,147 @@ class AuditStore:
                 "checked_entries": len(rows),
                 "reason": "audit events do not match their latest integrity snapshots",
             }
+        database_id_row = connection.execute(
+            "SELECT value FROM audit_integrity_meta WHERE key = 'database_id'"
+        ).fetchone()
         return {
             "valid": True,
             "checked_entries": len(rows),
             "checked_events": len(current_rows),
             "reason": "integrity chain verified",
+            "_database_id": database_id_row["value"] if database_id_row else None,
+            "_head_sequence": len(rows),
+            "_head_hash": previous_hash,
+            "_hashes_by_sequence": hashes_by_sequence,
         }
+
+    def _verify_integrity_connection(self, connection):
+        local = self._verify_local_integrity_connection(connection)
+        if not local["valid"]:
+            return local
+        if not local["_database_id"]:
+            return {
+                "valid": False,
+                "checked_entries": local["checked_entries"],
+                "checked_events": local["checked_events"],
+                "reason": "audit checkpoint database identity is missing",
+            }
+        checkpoint = self.checkpoint.verify(
+            database_id=local["_database_id"],
+            sequence=local["_head_sequence"],
+            head_hash=local["_head_hash"],
+        )
+        if not checkpoint["valid"]:
+            return {
+                "valid": False,
+                "checked_entries": local["checked_entries"],
+                "checked_events": local["checked_events"],
+                "reason": checkpoint["reason"],
+            }
+        return {
+            "valid": True,
+            "checked_entries": local["checked_entries"],
+            "checked_events": local["checked_events"],
+            "reason": "integrity chain and external checkpoint verified",
+        }
+
+    def _current_head(self, connection):
+        row = connection.execute(
+            "SELECT sequence, entry_hash FROM audit_integrity ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()
+        return (row["sequence"], row["entry_hash"]) if row else (0, self._ZERO_HASH)
+
+    def _advance_checkpoint(
+        self, database_id, previous_sequence, previous_hash, sequence, head_hash
+    ):
+        operation_id = f"{database_id}:{sequence}"
+        try:
+            self.checkpoint.compare_and_set(
+                database_id=database_id,
+                expected_sequence=previous_sequence,
+                expected_hash=previous_hash,
+                sequence=sequence,
+                head_hash=head_hash,
+                operation_id=operation_id,
+            )
+        except CheckpointError as error:
+            # The SQLite transaction already committed. A retry is safe only if
+            # the persistent checkpoint proves this exact operation was accepted.
+            try:
+                state = self.checkpoint.read()
+            except CheckpointError:
+                state = None
+            if not (
+                state
+                and state["operation_id"] == operation_id
+                and state["database_id"] == database_id
+                and state["sequence"] == sequence
+                and state["head_hash"] == head_hash
+                and state["previous_sequence"] == previous_sequence
+                and state["previous_hash"] == previous_hash
+            ):
+                raise sqlite3.DatabaseError(
+                    "audit checkpoint update failed; audit store requires recovery"
+                ) from error
+
+    def recover_checkpoint(self, *, approve_unanchored_revision=False):
+        """Anchor one locally valid committed revision after explicit operator approval."""
+        if not approve_unanchored_revision:
+            raise ValueError("explicit approval is required to recover an unanchored audit revision")
+        with self.checkpoint.writer_lock():
+            with self._connection() as connection:
+                local = self._verify_local_integrity_connection(connection)
+                if not local["valid"] or not local["_database_id"]:
+                    raise sqlite3.DatabaseError("local audit chain cannot be safely recovered")
+            try:
+                state = self.checkpoint.read()
+            except CheckpointError as error:
+                raise sqlite3.DatabaseError(
+                    "audit checkpoint is unavailable; refusing to establish a new baseline"
+                ) from error
+            database_id = local["_database_id"]
+            if state["database_id"] != database_id:
+                raise sqlite3.DatabaseError("audit checkpoint database identity mismatch")
+            if (
+                state["sequence"] == local["_head_sequence"]
+                and state["head_hash"] == local["_head_hash"]
+            ):
+                pass
+            elif local["_head_sequence"] != state["sequence"] + 1:
+                raise sqlite3.DatabaseError(
+                    "recovery requires exactly one unanchored revision; manual restore is required"
+                )
+            elif local["_hashes_by_sequence"].get(state["sequence"]) != state["head_hash"]:
+                raise sqlite3.DatabaseError(
+                    "unanchored revision does not extend the trusted checkpoint"
+                )
+            else:
+                self._advance_checkpoint(
+                    database_id,
+                    state["sequence"],
+                    state["head_hash"],
+                    local["_head_sequence"],
+                    local["_head_hash"],
+                )
+        return self.verify_integrity()
 
     def _assert_integrity(self, connection):
         result = self._verify_integrity_connection(connection)
         if not result["valid"]:
-            raise sqlite3.DatabaseError("audit integrity verification failed")
+            raise sqlite3.DatabaseError(
+                f"audit integrity verification failed: {result['reason']}"
+            )
+        local = self._verify_local_integrity_connection(connection)
+        return (
+            local["_database_id"], local["_head_sequence"], local["_head_hash"]
+        )
 
     def verify_integrity(self):
-        with self._connection() as connection:
-            return self._verify_integrity_connection(connection)
+        # SQLite is committed before the independent checkpoint advances.
+        # Share the writer lock so readers cannot observe that brief interval.
+        with self.checkpoint.writer_lock():
+            with self._connection() as connection:
+                return self._verify_integrity_connection(connection)
 
     def get_session_role(self, session_id):
         with self._connection() as connection:

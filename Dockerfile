@@ -5,8 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN mkdir -p /app/data /app/reports/red-runs /tmp \
-    && chown -R 10001:10001 /app/data /app/reports /tmp
+RUN mkdir -p /app/data /app/audit-checkpoint /app/reports/red-runs /tmp \
+    && chown -R 10001:10001 /app/data /app/audit-checkpoint /app/reports /tmp
 
 COPY requirements.txt ./requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements.txt

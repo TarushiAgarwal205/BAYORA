@@ -1,8 +1,11 @@
 import sqlite3
 from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
 import pytest
 
+from backend.audit_checkpoint import CheckpointError
 from backend.audit_store import AuditStore, utc_timestamp
 
 
@@ -20,6 +23,11 @@ def event(event_id="event-1", **overrides):
     }
     value.update(overrides)
     return value
+
+
+def _record_from_process(database_path, event_id):
+    store = AuditStore(Path(database_path))
+    store.record(event(event_id))
 
 
 def test_records_complete_events_with_utc_separation_fields(tmp_path):
@@ -121,7 +129,7 @@ def test_empty_existing_database_is_migrated_additively(tmp_path):
             verification_result TEXT NOT NULL DEFAULT 'NOT_VERIFIED'
         )""")
     store = AuditStore(database)
-    store.initialize()
+    store.initialize(allow_checkpoint_bootstrap=True)
 
     with sqlite3.connect(database) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(audit_events)")}
@@ -186,7 +194,7 @@ def test_integrity_chain_tracks_each_operation_revision(tmp_path):
         "valid": True,
         "checked_entries": 2,
         "checked_events": 1,
-        "reason": "integrity chain verified",
+        "reason": "integrity chain and external checkpoint verified",
     }
 
 
@@ -233,6 +241,184 @@ def test_integrity_verification_detects_missing_audit_event(tmp_path):
     result = store.verify_integrity()
     assert result["valid"] is False
     assert result["reason"] == "audit events do not match their latest integrity snapshots"
+
+
+def test_integrity_verification_detects_removed_chain_entry(tmp_path):
+    database = tmp_path / "missing-integrity-entry.sqlite3"
+    store = AuditStore(database)
+    store.initialize()
+    store.record(event("first-event"))
+    store.record(event("second-event"))
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM audit_integrity WHERE event_id = ?", ("first-event",))
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "integrity sequence is incomplete"
+
+
+def test_integrity_verification_detects_reordered_chain_entries(tmp_path):
+    database = tmp_path / "reordered-integrity.sqlite3"
+    store = AuditStore(database)
+    store.initialize()
+    store.record(event("first-event"))
+    store.record(event("second-event"))
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE audit_integrity SET sequence = 3 WHERE sequence = 1")
+        connection.execute("UPDATE audit_integrity SET sequence = 1 WHERE sequence = 2")
+        connection.execute("UPDATE audit_integrity SET sequence = 2 WHERE sequence = 3")
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "integrity chain link does not match"
+
+
+def test_integrity_verification_detects_paired_tail_truncation(tmp_path):
+    database = tmp_path / "tail-truncation.sqlite3"
+    store = AuditStore(database)
+    store.initialize()
+    store.record(event("first-event"))
+    store.record(event("last-event"))
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM audit_events WHERE event_id = ?", ("last-event",))
+        connection.execute("DELETE FROM audit_integrity WHERE event_id = ?", ("last-event",))
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "audit checkpoint head does not match"
+    with pytest.raises(sqlite3.DatabaseError, match="checkpoint head does not match"):
+        store.record(event("after-truncation"))
+
+
+def test_checkpoint_tampering_fails_closed(tmp_path):
+    store = AuditStore(tmp_path / "checkpoint-tampering.sqlite3")
+    store.initialize()
+    store.record(event("anchored-event"))
+
+    with sqlite3.connect(store.checkpoint.path) as connection:
+        connection.execute("UPDATE checkpoint_state SET head_hash = ?", ("f" * 64,))
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "audit checkpoint authentication failed"
+    with pytest.raises(sqlite3.DatabaseError, match="checkpoint authentication failed"):
+        store.record(event("after-checkpoint-tamper"))
+
+
+def test_missing_checkpoint_fails_closed_without_rebaselining(tmp_path):
+    store = AuditStore(tmp_path / "missing-checkpoint.sqlite3")
+    store.initialize()
+    store.record(event("anchored-event"))
+    store.checkpoint.path.unlink()
+
+    assert store.verify_integrity() == {
+        "valid": False,
+        "checked_entries": 1,
+        "checked_events": 1,
+        "reason": "audit checkpoint is missing",
+    }
+    with pytest.raises(sqlite3.DatabaseError, match="refusing to establish a new baseline"):
+        store.initialize()
+
+
+def test_checkpoint_retry_is_idempotent(tmp_path):
+    store = AuditStore(tmp_path / "checkpoint-retry.sqlite3")
+    store.initialize()
+    store.record(event("retry-event"))
+    state = store.checkpoint.read()
+
+    retried = store.checkpoint.compare_and_set(
+        database_id=state["database_id"],
+        expected_sequence=state["previous_sequence"],
+        expected_hash=state["previous_hash"],
+        sequence=state["sequence"],
+        head_hash=state["head_hash"],
+        operation_id=state["operation_id"],
+    )
+    assert retried == state
+
+
+def test_lost_checkpoint_acknowledgement_is_confirmed_idempotently(tmp_path, monkeypatch):
+    store = AuditStore(tmp_path / "lost-ack.sqlite3")
+    store.initialize()
+    compare_and_set = store.checkpoint.compare_and_set
+
+    def accept_then_lose_ack(**kwargs):
+        compare_and_set(**kwargs)
+        raise CheckpointError("simulated lost acknowledgement")
+
+    monkeypatch.setattr(store.checkpoint, "compare_and_set", accept_then_lose_ack)
+    store.record(event("lost-ack-event"))
+    assert store.verify_integrity()["valid"] is True
+
+
+def test_unavailable_checkpoint_fails_closed_for_reads_and_writes(tmp_path, monkeypatch):
+    store = AuditStore(tmp_path / "unavailable-checkpoint.sqlite3")
+    store.initialize()
+    monkeypatch.setattr(
+        store.checkpoint,
+        "read",
+        lambda: (_ for _ in ()).throw(CheckpointError("checkpoint unavailable")),
+    )
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "checkpoint unavailable"
+    with pytest.raises(sqlite3.DatabaseError, match="checkpoint unavailable"):
+        store.record(event("must-not-write"))
+    assert store.get_event("must-not-write") is None
+
+
+def test_missing_checkpoint_key_fails_before_database_initialization(tmp_path):
+    database = tmp_path / "missing-key.sqlite3"
+    store = AuditStore(database, checkpoint_key="")
+
+    with pytest.raises(CheckpointError, match="at least 32 bytes"):
+        store.initialize()
+    assert database.exists() is False
+
+
+def test_interrupted_checkpoint_write_requires_explicit_recovery(tmp_path, monkeypatch):
+    store = AuditStore(tmp_path / "interrupted-checkpoint.sqlite3")
+    store.initialize()
+    original_advance = store.checkpoint.compare_and_set
+
+    def fail_before_checkpoint(**_kwargs):
+        raise CheckpointError("simulated checkpoint outage")
+
+    monkeypatch.setattr(store.checkpoint, "compare_and_set", fail_before_checkpoint)
+    with pytest.raises(sqlite3.DatabaseError, match="requires recovery"):
+        store.record(event("committed-before-checkpoint"))
+    assert store.verify_integrity()["valid"] is False
+
+    monkeypatch.setattr(store.checkpoint, "compare_and_set", original_advance)
+    with pytest.raises(ValueError, match="explicit approval"):
+        store.recover_checkpoint()
+    result = store.recover_checkpoint(approve_unanchored_revision=True)
+    assert result["valid"] is True
+    assert store.get_event("committed-before-checkpoint") is not None
+
+
+def test_concurrent_process_writers_advance_checkpoint_in_sequence(tmp_path):
+    database = tmp_path / "concurrent-checkpoint.sqlite3"
+    first = AuditStore(database)
+    first.initialize()
+
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(_record_from_process, str(database), "concurrent-one"),
+            pool.submit(_record_from_process, str(database), "concurrent-two"),
+        ]
+        for future in futures:
+            future.result()
+
+    result = first.verify_integrity()
+    assert result["valid"] is True
+    assert result["checked_entries"] == 2
+    assert result["checked_events"] == 2
 
 
 def test_missing_integrity_initialization_marker_does_not_rebaseline(tmp_path):

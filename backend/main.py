@@ -14,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from backend.audit_store import AuditStore, utc_timestamp
 from backend.blue_client import BlueServiceClient
 from backend.config import (
+    AUDIT_CHECKPOINT_KEY,
+    AUDIT_CHECKPOINT_PATH,
     AUDIT_DB_PATH,
     BLUE_SERVICE_TOKEN,
     BLUE_SERVICE_URL,
@@ -124,6 +126,8 @@ class ScenarioRunRequest(BaseModel):
 def create_app(
     rules_path=RULES_PATH,
     audit_db_path=AUDIT_DB_PATH,
+    audit_checkpoint_path=None,
+    audit_checkpoint_key=AUDIT_CHECKPOINT_KEY,
     audit_store=None,
     blue_client=None,
     llm_client=None,
@@ -132,7 +136,18 @@ def create_app(
     scenario_results_dir=None,
     scenario_runner=None,
 ):
-    store = audit_store or AuditStore(audit_db_path)
+    checkpoint_path = audit_checkpoint_path
+    if checkpoint_path is None:
+        checkpoint_path = (
+            AUDIT_CHECKPOINT_PATH
+            if Path(audit_db_path) == AUDIT_DB_PATH
+            else Path(audit_db_path).with_suffix(".checkpoint.sqlite3")
+        )
+    store = audit_store or AuditStore(
+        audit_db_path,
+        checkpoint_path=checkpoint_path,
+        checkpoint_key=audit_checkpoint_key,
+    )
     resource_client = blue_client or BlueServiceClient(BLUE_SERVICE_URL, BLUE_SERVICE_TOKEN)
     model_client = llm_client or create_llm_client(
         api_key=OPENROUTER_API_KEY,

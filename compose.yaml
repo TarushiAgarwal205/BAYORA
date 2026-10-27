@@ -23,22 +23,25 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
     environment:
-      BAYORA_HOST: 0.0.0.0
+      BAYORA_HOST: "0.0.0.0"
       BAYORA_PORT: "8000"
-      BAYORA_BLUE_SERVICE_URL: http://blue:8001
+      BAYORA_BLUE_SERVICE_URL: "http://blue:8001"
       BAYORA_BLUE_SERVICE_TOKEN: ${BAYORA_BLUE_SERVICE_TOKEN:?Set BAYORA_BLUE_SERVICE_TOKEN in .env}
       BAYORA_GATEWAY_RED_TOKEN: ${BAYORA_GATEWAY_RED_TOKEN:-}
       BAYORA_GATEWAY_BLUE_TOKEN: ${BAYORA_GATEWAY_BLUE_TOKEN:-}
       BAYORA_GATEWAY_ADMIN_TOKEN: ${BAYORA_GATEWAY_ADMIN_TOKEN:-}
       BAYORA_AUDIT_DB: /app/data/bayora_audit.sqlite3
+      BAYORA_AUDIT_CHECKPOINT_PATH: /app/audit-checkpoint/checkpoint.sqlite3
+      BAYORA_AUDIT_CHECKPOINT_KEY: ${BAYORA_AUDIT_CHECKPOINT_KEY:?Set BAYORA_AUDIT_CHECKPOINT_KEY in .env}
       BAYORA_SECURITY_CONFIG: /app/data/security-config.json
-      BAYORA_LLM_SERVICE_URL: http://llm:8002
+      BAYORA_LLM_SERVICE_URL: "http://llm:8002"
       BAYORA_LLM_SERVICE_TOKEN: ${BAYORA_LLM_SERVICE_TOKEN:?Set BAYORA_LLM_SERVICE_TOKEN in .env}
       BAYORA_LLM_MODEL: ${BAYORA_LLM_MODEL:-openrouter/free}
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
+      - audit-checkpoint:/app/audit-checkpoint
       - ./policies:/app/policies
       - ./reports/red-runs:/app/reports/red-runs
     depends_on:
@@ -149,7 +152,7 @@ services:
       - red.runner
       - run
       - --gateway-url
-      - http://gateway:8000
+      - "http://gateway:8000"
       - --case
       - denied-red-resource-read
       - --case
@@ -181,9 +184,15 @@ services:
 networks:
   red-gateway:
     internal: true
+
   blue-gateway:
     internal: true
+
   llm-gateway:
     internal: true
+
   llm-egress:
     driver: bridge
+
+volumes:
+  audit-checkpoint:
