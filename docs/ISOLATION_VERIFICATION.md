@@ -262,3 +262,54 @@ the inspected configuration/runtime posture; no finding was resolved by this
 read-only follow-up. Red-to-Blue denial and resource contention remain
 unverified. No containers or networks were modified, and no user or Codex
 changes were staged, committed, reverted, or discarded.
+
+## Additional read-only ownership and policy investigation
+
+On 2026-10-27, further read-only inspection was performed on the then-current
+HEAD `cbc028add51295480c070766757f9d43617a9b95` (branch `main`) using the
+Docker Desktop context and Engine `29.9.1`. This is a new snapshot; it does not
+replace the earlier evidence recorded against
+`98ef19c3fbfb3e386f88fd4d03535e56eb24f946`. The local `compose.yaml` changes
+were quoting/spacing only; the committed and working-tree network declarations
+both omit `gateway-host` from Gateway and define `llm-egress` as an ordinary
+bridge. No containers, networks, or firewall rules were modified, and no
+outbound connectivity tests were performed.
+
+- **Gateway network — Compose origin confirmed; purpose only inferred.**
+  Docker labels on `bayora_gateway-host` identify it as Compose network
+  `gateway-host` in project `bayora`, created with Compose `5.6.0`; it is a
+  non-internal bridge and Gateway is its only member. The running Gateway's
+  Compose config-file label points to this checkout's `compose.yaml`, but its
+  recorded service config hash (`cb976e81d16acb824a25aebfa12f70d47dba24b1b74cde46ba48a42b5a75f968`)
+  differs from the current `docker compose config --hash gateway` result
+  (`e519e5b24bc7e3a906f52f2aeb6a111835be43eb7c50d27f186d0db905f18112`).
+  This supports a different resolved service configuration at container
+  creation, but does not establish whether the difference came from an older
+  Compose file, environment-dependent resolution, or a later attachment.
+  The name and non-internal bridge are consistent with an intended Gateway
+  external/host-network path, but that purpose and its owner are not proven.
+  The deployment owner should confirm whether it remains required and identify
+  the approved source configuration before any redeployment or detachment.
+- **`bayora-port-test` — likely test container; owner unidentifiable.**
+  Docker reports image `nginx`, creation time `2026-10-27T15:51:54Z`, no
+  Compose project/service labels, no published host ports, and membership on
+  `bayora_blue-gateway`. Its name and image are consistent with a temporary
+  network/port test, but Docker metadata does not identify a creator, purpose,
+  or operator. The safest next step is for the Docker operator to identify the
+  owner and confirm whether it is still needed before an approved disconnect.
+- **LLM egress — no provider allowlist found in the inspected configuration.**
+  The checked-in `llm-egress` network is `driver: bridge`; Docker reports
+  `internal=false`. The scoped repository search found no proxy, destination
+  allowlist, or firewall/network-policy configuration. This establishes that
+  provider-specific restriction is not demonstrated by the inspected BAYORA
+  Compose/repository configuration. It does not rule out an independently
+  managed Windows/Docker Desktop host firewall, endpoint control, or upstream
+  network policy; those rules were not inspected.
+
+To verify provider-only egress, the deployment owner must identify and provide
+the enforcement point and its effective policy for the LLM container, including
+allowed provider destinations, ports/protocols, DNS handling, and default-deny
+behavior. Verification then requires a controlled isolated test showing an
+approved synthetic destination succeeds and a prohibited synthetic destination
+is blocked, with policy/log evidence and no credentials or sensitive prompts.
+Until that evidence exists, provider-only egress remains **unverified**.
