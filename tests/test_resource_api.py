@@ -106,36 +106,49 @@ def test_red_credential_overrides_spoofed_blue_body_role(tmp_path):
         assert event["decision"] == "DENY"
 
 
-def test_session_role_switch_is_denied_before_blue_call(tmp_path):
+def test_cross_role_session_preclaim_does_not_block_blue_resource_read(tmp_path):
     calls = []
 
     def count_call(request):
         calls.append(request)
-        return httpx.Response(200, json={"content": "unexpected"})
+        from blue.service import RESOURCE_CLASSIFICATION, RESOURCE_CONTENT, RESOURCE_SHA256
+        return httpx.Response(200, json={
+            "resource_id": RESOURCE_ID,
+            "classification": RESOURCE_CLASSIFICATION,
+            "content": RESOURCE_CONTENT,
+            "sha256": RESOURCE_SHA256,
+        })
 
     with make_client(tmp_path, httpx.MockTransport(count_call)) as client:
         first = client.post(
             "/policy/decide",
             json={
-                "session_id": "resource-role-bound",
+                "session_id": "resource-session-preclaim",
                 "role": "red",
-                "action": "run_approved_test",
-                "resource": "test:authorized_access",
+                "action": "read_artifact",
+                "resource": RESOURCE_ID,
             },
             headers=gateway_headers("red"),
         )
         assert first.status_code == 200
-        switched_payload = request(role="red")
-        switched_payload["session_id"] = "resource-role-bound"
+        assert first.json()["decision"] == "DENY"
+
+        blue_payload = request(role="red")
+        blue_payload["session_id"] = "resource-session-preclaim"
         response = client.post(
-            "/resource/read", json=switched_payload, headers=gateway_headers("blue")
+            "/resource/read", json=blue_payload, headers=gateway_headers("blue")
         )
-        assert response.status_code == 403
-        assert "session isolation violation" in response.json()["detail"]["reason"]
-        assert calls == []
-        event = audit_events(client, role="blue")[0]
-        assert event["decision"] == "DENY"
-        assert event["matched_rule_id"] == "session-isolation-violation"
+        assert response.status_code == 200
+        assert response.json()["operation_executed"] is True
+        assert len(calls) == 1
+        red_events = audit_events(client, role="red")
+        blue_events = audit_events(client, role="blue")
+        assert len(red_events) == 1
+        assert red_events[0]["decision"] == "DENY"
+        assert len(blue_events) == 1
+        assert blue_events[0]["decision"] == "ALLOW"
+        assert blue_events[0]["role"] == "blue"
+        assert blue_events[0]["observed_outcome"] == "SUCCEEDED"
 
 
 def test_direct_resource_call_with_role_claim_but_without_token_is_denied():

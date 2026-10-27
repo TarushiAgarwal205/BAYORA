@@ -112,32 +112,54 @@ def test_audit_events_are_scoped_to_authenticated_role(make_client):
         assert client.get(f"/audit/events/{event_id}", headers=blue_headers).json()["role"] == "blue"
 
 
-def test_session_role_switch_is_denied_and_audited(make_client):
+def test_cross_role_session_id_preclaim_is_role_scoped(make_client):
     with make_client() as client:
         first = client.post("/policy/decide", json={
-            "session_id": "role-bound-session",
+            "session_id": "shared-client-session",
             "role": "blue",
-            "action": "run_approved_test",
-            "resource": "test:authorized_access",
+            "action": "read_artifact",
+            "resource": "blue:synthetic-confidential",
         })
         assert first.status_code == 200
-        assert first.json()["decision"] == "ALLOW"
+        assert first.json()["decision"] == "DENY"
+        assert first.json()["role"] == "red"
         blue_headers = {"Authorization": f"Bearer {TEST_CALLER_TOKENS['blue']}"}
-        switched = client.post("/policy/decide", json={
-            "session_id": "role-bound-session",
+        blue_event = client.post("/policy/decide", json={
+            "session_id": "shared-client-session",
             "role": "red",
             "action": "read_artifact",
             "resource": "blue:synthetic-confidential",
         }, headers=blue_headers)
-        assert switched.status_code == 200
-        assert switched.json()["decision"] == "DENY"
-        assert switched.json()["role"] == "blue"
-        assert switched.json()["matched_rule_id"] == "session-isolation-violation"
-        event = client.get(
-            f"/audit/events/{switched.json()['event_id']}", headers=blue_headers
-        ).json()
-        assert event["decision"] == "DENY"
-        assert "session isolation violation" in event["reason"]
+        assert blue_event.status_code == 200
+        assert blue_event.json()["decision"] == "ALLOW"
+        assert blue_event.json()["role"] == "blue"
+        assert blue_event.json()["session_id"] == "shared-client-session"
+
+        red_events = client.get("/audit/events").json()["events"]
+        blue_events = client.get("/audit/events", headers=blue_headers).json()["events"]
+        assert [item["role"] for item in red_events] == ["red"]
+        assert [item["role"] for item in blue_events] == ["blue"]
+        assert all(item["session_id"] == "shared-client-session" for item in red_events + blue_events)
+
+
+@pytest.mark.parametrize("rules_contents", [None, "not json", "{}"])
+def test_health_is_not_ready_when_policy_file_is_missing_or_invalid(make_client, tmp_path, rules_contents):
+    rules_path = tmp_path / "unready-rules.json"
+    if rules_contents is not None:
+        rules_path.write_text(rules_contents, encoding="utf-8")
+
+    with make_client(rules_path=rules_path) as client:
+        health = client.get("/health")
+        assert health.status_code == 503
+        assert health.json()["detail"] == "required policy configuration is unavailable"
+        decision = client.post("/policy/decide", json={
+            "role": "blue",
+            "action": "read_artifact",
+            "resource": "blue:synthetic-confidential",
+        })
+        assert decision.status_code == 200
+        assert decision.json()["decision"] == "DENY"
+        assert "policy configuration error" in decision.json()["reason"]
 
 
 def test_protected_gateway_routes_and_audit_reads_reject_missing_credentials(make_client):

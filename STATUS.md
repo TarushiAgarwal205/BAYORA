@@ -4,7 +4,7 @@ Status updated 2026-10-27. The dashboard remains served at `/dashboard/`. **DEMO
 
 | Component | Status |
 |---|---|
-| Credential-derived Gateway roles, protected routes, body-role spoofing rejection, session role-switch denial | IMPLEMENTED AND TESTED (shared prototype bearer tokens; no production user identity) |
+| Credential-derived Gateway roles, protected routes, body-role spoofing rejection, role-scoped session correlation | IMPLEMENTED AND TESTED (shared role credentials do not identify individual users; session IDs are not identity credentials) |
 | Blue synthetic resource and independent service-token check | IMPLEMENTED AND TESTED (one dummy fixture) |
 | Default-deny policy engine and policy-gated Blue/LLM operations | IMPLEMENTED AND TESTED |
 | Administrator policy console: validated CRUD, enable/disable, dry-run, audit, atomic persistence | IMPLEMENTED AND TESTED (required Red-to-Blue deny safeguard cannot be removed or disabled) |

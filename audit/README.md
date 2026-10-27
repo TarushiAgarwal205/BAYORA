@@ -2,7 +2,7 @@
 
 Audit events are stored by `backend/audit_store.py`. The SQLite event schema is preserved and extended with additive initialization where needed; hash snapshots live in separate `audit_integrity` and `audit_integrity_meta` tables.
 
-Policy decisions start as `NOT_EXECUTED` and `NOT_VERIFIED`. Resource and LLM operations are recorded as pending, then finalized with an observed outcome. Ambiguous failures remain `UNKNOWN` and `NOT_VERIFIED`. Session IDs bind to the first authenticated role recorded for that session, preventing role switching within that ID; they do not identify individual users.
+Policy decisions start as `NOT_EXECUTED` and `NOT_VERIFIED`. Resource and LLM operations are recorded as pending, then finalized with an observed outcome. Ambiguous failures remain `UNKNOWN` and `NOT_VERIFIED`. Session IDs are caller-supplied correlation labels scoped by the authenticated role. Reusing an ID under another role does not change caller authority or create a cross-role session binding. Shared role credentials do not identify individual users, so these labels do not provide per-user session isolation.
 
 `GET /audit/integrity` and the dashboard-compatible `GET /audit/verify` verify the append-only SHA-256 snapshot revision chain. Event and detail APIs, anomaly findings, and evidence summaries are scoped to the authenticated caller role. Reports omit Red-run files because those files do not currently carry authenticated role ownership metadata.
 

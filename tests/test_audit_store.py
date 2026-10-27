@@ -68,6 +68,21 @@ def test_records_unique_ids_and_filters_with_pagination(tmp_path):
         raise AssertionError("duplicate event ID should fail")
 
 
+def test_same_client_session_id_is_isolated_by_authenticated_role(tmp_path):
+    store = AuditStore(tmp_path / "role-scoped-sessions.sqlite3")
+    store.initialize()
+    store.record(event("red-session-event", session_id="shared-id", role="red"))
+    store.record(event("blue-session-event", session_id="shared-id", role="blue"))
+
+    assert store.get_session_role("shared-id") is None
+    assert [row["event_id"] for row in store.list_events(session_id="shared-id", role="red")] == [
+        "red-session-event"
+    ]
+    assert [row["event_id"] for row in store.list_events(session_id="shared-id", role="blue")] == [
+        "blue-session-event"
+    ]
+
+
 def test_sql_metacharacters_are_stored_as_data(tmp_path):
     store = AuditStore(tmp_path / "audit.sqlite3")
     store.initialize()
@@ -94,8 +109,30 @@ def test_pending_resource_operation_is_completed_with_evidence(tmp_path):
     assert completed["verification_result"] == "VERIFIED"
 
 
-def test_existing_database_is_migrated_additively(tmp_path):
+def test_empty_existing_database_is_migrated_additively(tmp_path):
     database = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("""CREATE TABLE audit_events (
+            event_id TEXT PRIMARY KEY, timestamp_utc TEXT NOT NULL,
+            session_id TEXT NOT NULL, role TEXT NOT NULL, action TEXT NOT NULL,
+            resource TEXT NOT NULL, decision TEXT NOT NULL,
+            reason TEXT NOT NULL, matched_rule_id TEXT NOT NULL,
+            observed_outcome TEXT NOT NULL DEFAULT 'NOT_EXECUTED',
+            verification_result TEXT NOT NULL DEFAULT 'NOT_VERIFIED'
+        )""")
+    store = AuditStore(database)
+    store.initialize()
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(audit_events)")}
+    assert "operation_executed" in columns
+    assert store.verify_integrity()["valid"] is True
+    store.record_pending_operation(event("new"))
+    assert store.get_event("new")["observed_outcome"] == "PENDING"
+
+
+def test_populated_database_without_integrity_tables_fails_closed(tmp_path):
+    database = tmp_path / "untracked-history.sqlite3"
     with sqlite3.connect(database) as connection:
         connection.execute("""CREATE TABLE audit_events (
             event_id TEXT PRIMARY KEY, timestamp_utc TEXT NOT NULL,
@@ -111,15 +148,18 @@ def test_existing_database_is_migrated_additively(tmp_path):
              "test:authorized_access", "ALLOW", "legacy row", "rule-1",
              "NOT_EXECUTED", "NOT_VERIFIED"),
         )
-    store = AuditStore(database)
-    store.initialize()
 
-    stored = store.get_event("legacy")
-    assert stored["reason"] == "legacy row"
-    assert stored["operation_executed"] == 0
-    assert store.verify_integrity()["valid"] is True
-    store.record_pending_operation(event("new"))
-    assert store.get_event("new")["observed_outcome"] == "PENDING"
+    store = AuditStore(database)
+    with pytest.raises(sqlite3.DatabaseError, match="refusing to re-baseline"):
+        store.initialize()
+
+    with sqlite3.connect(database) as connection:
+        tables = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )}
+        rows = connection.execute("SELECT event_id, reason FROM audit_events").fetchall()
+    assert tables == {"audit_events"}
+    assert rows == [("legacy", "legacy row")]
 
 
 def test_operation_audit_rejects_inconsistent_status(tmp_path):

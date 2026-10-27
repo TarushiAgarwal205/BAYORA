@@ -302,6 +302,13 @@ def create_app(
 
     @application.get("/health")
     def health():
+        try:
+            application.state.policy_engine.get_rules()
+        except RuntimeError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="required policy configuration is unavailable",
+            ) from error
         return {"status": "healthy"}
 
     @application.post("/test")

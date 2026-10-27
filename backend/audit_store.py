@@ -35,12 +35,23 @@ class AuditStore:
     def initialize(self):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
-            existing_integrity_tables = {
+            existing_tables = {
                 row["name"]
                 for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )
-            }.intersection({"audit_integrity", "audit_integrity_meta"})
+            }
+            existing_integrity_tables = existing_tables.intersection(
+                {"audit_integrity", "audit_integrity_meta"}
+            )
+            if "audit_events" in existing_tables and not existing_integrity_tables:
+                existing_event = connection.execute(
+                    "SELECT 1 FROM audit_events LIMIT 1"
+                ).fetchone()
+                if existing_event is not None:
+                    raise sqlite3.DatabaseError(
+                        "audit integrity tables are missing; refusing to re-baseline populated history"
+                    )
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS audit_events (
                     event_id TEXT PRIMARY KEY,
@@ -104,28 +115,10 @@ class AuditStore:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._assert_integrity(connection)
-            event = self._enforce_session_role(connection, event)
+            # session_id is a correlation label scoped by the authenticated role.
+            # It is not an authentication credential and may be reused by another role.
             self._insert_decision_event(connection, event)
             return event
-
-    @staticmethod
-    def _enforce_session_role(connection, event):
-        established = connection.execute(
-            "SELECT role FROM audit_events WHERE session_id = ? ORDER BY rowid LIMIT 1",
-            (event["session_id"],),
-        ).fetchone()
-        if established is None or established["role"] == event["role"]:
-            return event
-        denied = dict(event)
-        denied.update({
-            "decision": "DENY",
-            "reason": (
-                f"session isolation violation: session '{event['session_id']}' "
-                f"is bound to role '{established['role']}'"
-            ),
-            "matched_rule_id": "session-isolation-violation",
-        })
-        return denied
 
     def _insert_decision_event(self, connection, event):
         connection.execute(
@@ -151,10 +144,6 @@ class AuditStore:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._assert_integrity(connection)
-            event = self._enforce_session_role(connection, event)
-            if event["decision"] != "ALLOW":
-                self._insert_decision_event(connection, event)
-                return event
             connection.execute(
                 """INSERT INTO audit_events (
                     event_id, timestamp_utc, session_id, role, action, resource,
@@ -311,11 +300,11 @@ class AuditStore:
 
     def get_session_role(self, session_id):
         with self._connection() as connection:
-            row = connection.execute(
-                "SELECT role FROM audit_events WHERE session_id = ? ORDER BY rowid LIMIT 1",
+            rows = connection.execute(
+                "SELECT DISTINCT role FROM audit_events WHERE session_id = ? ORDER BY role",
                 (session_id,),
-            ).fetchone()
-            return row["role"] if row else None
+            ).fetchall()
+            return rows[0]["role"] if len(rows) == 1 else None
 
     def list_events(self, limit=50, offset=0, session_id=None, decision=None, role=None):
         clauses = []
