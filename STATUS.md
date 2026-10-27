@@ -15,7 +15,7 @@ Status updated 2026-10-27. The dashboard remains served at `/dashboard/`. **DEMO
 | SQLite audit outcomes, role/session fields, integrity-chain verification | IMPLEMENTED AND TESTED (unkeyed SHA-256 chain; missing marker and tampering fail closed) |
 | Anomaly indicators and evidence summaries | IMPLEMENTED AND TESTED (fixed heuristics, not comprehensive detection) |
 | OpenRouter integration | IMPLEMENTED AND TESTED WITH MOCKS (no live provider request verified) |
-| Compose Gateway, Blue, LLM, and Red services | CONFIGURED; Docker CLI unavailable in this environment, so Compose/runtime not verified |
+| Compose Gateway, Blue, LLM, and Red services | CONFIGURED; Gateway is attached only to internal service networks; Docker CLI unavailable, so runtime egress and published-port access are not verified |
 | Non-root containers, read-only root filesystems, dropped capabilities, network segmentation, resource limits | CONFIGURED; runtime settings not verified in this pass |
 | Production identity, user lifecycle, token expiry/rotation | NOT IMPLEMENTED |
 | Signed/keyed immutable audit, production container sandbox, general-purpose Red Team agent | NOT IMPLEMENTED |
@@ -26,7 +26,7 @@ Status updated 2026-10-27. The dashboard remains served at `/dashboard/`. **DEMO
 - Dependency check: `venv\Scripts\python.exe -m pip check` — **No broken requirements found**.
 - Root import check confirmed `main:app` and `backend.main:app` are the same app.
 - `git diff --check` — no whitespace errors; Git emitted access-denied notices for three pre-existing tracked `.pytest-tmp/` deletions and line-ending notices.
-- Docker CLI was not available; Compose parsing, image builds, container startup, network behavior, and restart persistence were not verified.
+- Docker CLI was not available; Compose parsing, image builds, container startup, network behavior, and restart persistence were not verified. Current Compose configuration gives only the LLM service an ordinary egress bridge; it is not restricted to the OpenRouter hostname.
 - No live OpenRouter request was made. Frontend behavior is covered by source/API contract tests; no browser automation or JavaScript runtime was available.
 
 ## Limitations

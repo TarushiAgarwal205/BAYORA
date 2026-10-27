@@ -50,7 +50,6 @@ services:
       - red-gateway
       - blue-gateway
       - llm-gateway
-      - gateway-host
     healthcheck:
       test:
         - CMD
@@ -187,6 +186,4 @@ networks:
   llm-gateway:
     internal: true
   llm-egress:
-    driver: bridge
-  gateway-host:
     driver: bridge

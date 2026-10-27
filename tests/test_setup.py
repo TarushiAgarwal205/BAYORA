@@ -91,3 +91,22 @@ def test_root_uvicorn_entrypoint_uses_the_secured_gateway_app():
     from backend.main import app as secured_app
 
     assert root_main.app is secured_app
+
+
+def test_compose_gateway_has_no_external_bridge_and_keeps_required_paths():
+    compose = (PROJECT_ROOT / "compose.yaml").read_text(encoding="utf-8")
+    gateway = compose.split("  gateway:\n", 1)[1].split("\n  blue:\n", 1)[0]
+    blue = compose.split("  blue:\n", 1)[1].split("\n  llm:\n", 1)[0]
+    llm = compose.split("  llm:\n", 1)[1].split("\n  red:\n", 1)[0]
+    red = compose.split("  red:\n", 1)[1].split("\nnetworks:\n", 1)[0]
+
+    assert '"127.0.0.1:8000:8000"' in gateway
+    assert "- red-gateway" in gateway
+    assert "- blue-gateway" in gateway
+    assert "- llm-gateway" in gateway
+    assert "gateway-host" not in gateway
+    assert "gateway-host:" not in compose
+    assert "- blue-gateway" in blue
+    assert "- llm-egress" in llm
+    assert "- red-gateway" in red
+    assert "llm-egress" not in gateway + blue + red
