@@ -33,13 +33,49 @@ Optional read-only runtime probes against existing containers:
 python scripts\verify_isolation.py --probe
 ```
 
+For a reproducible runtime check, use a disposable Docker host or isolated
+Compose project with no production data or credentials. Start only the stack
+you intend to inspect, then run the verifier without asking it to create or
+change deployment state:
+
+```powershell
+docker compose config --quiet
+docker compose up -d gateway blue llm
+docker compose ps --all
+python scripts\verify_isolation.py --probe
+```
+
+This sequence verifies the currently running Gateway, Blue, and LLM containers.
+It does not start Red, so Red-to-Blue direct access remains UNVERIFIED unless
+an already-running Red container is available. The verifier never starts Red
+or creates a probe container. Run the same command after a reviewed deployment
+change and record its commit and Docker environment; do not use evidence from
+containers created from a different configuration as evidence for the new
+deployment.
+
 The optional probes read `/proc` and cgroup files, sample public local health
 endpoints, and run `docker stats --no-stream`. They do not run a scenario, call
 an external host, start a process-intensive workload, or change deployment
 state. The Red-to-Blue probe runs only if a Red container is already running;
 the verifier never starts one. A PASS from `docker inspect` means Docker reports
 that setting on the container; it is not a substitute for kernel-level runtime
-evidence.
+evidence. Compose declarations are reported as INFO when present, not as PASS
+for effective enforcement. Missing required declarations are FAIL. Runtime
+PASS results identify whether their evidence is Docker metadata, `/proc`,
+cgroup, or a successful local health response.
+
+The Red-to-Blue check probes Blue's Docker-reported private address directly
+from an already-running Red container, rather than relying on an unresolved
+service name. A successful HTTP response is FAIL. An explicit kernel
+network/host-unreachable error is PASS. Timeouts, connection refusal, DNS
+errors, missing probe output, or other ambiguous errors are UNVERIFIED; they
+must not be treated as proof of network isolation.
+
+Protected-network peer checks compare Docker's actual peer list with the
+Compose services expected on each network. An unlisted container or a BAYORA
+service attached to the wrong protected network is reported as FAIL. The
+verifier does not disconnect unknown peers; have the deployment owner identify
+them and coordinate any corrective deployment.
 
 The script exits `0` only when there are no failed or unverified checks, `1`
 when any check fails (even if other checks are also unverified), and `2` when
