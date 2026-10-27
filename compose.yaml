@@ -10,6 +10,18 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
+    user: "10001:10001"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    cpus: 1.0
+    mem_limit: 512m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
     environment:
       BAYORA_HOST: 0.0.0.0
       BAYORA_PORT: "8000"
@@ -17,7 +29,9 @@ services:
       BAYORA_BLUE_SERVICE_TOKEN: ${BAYORA_BLUE_SERVICE_TOKEN:?Set BAYORA_BLUE_SERVICE_TOKEN in .env}
       BAYORA_GATEWAY_RED_TOKEN: ${BAYORA_GATEWAY_RED_TOKEN:-}
       BAYORA_GATEWAY_BLUE_TOKEN: ${BAYORA_GATEWAY_BLUE_TOKEN:-}
+      BAYORA_GATEWAY_ADMIN_TOKEN: ${BAYORA_GATEWAY_ADMIN_TOKEN:-}
       BAYORA_AUDIT_DB: /app/data/bayora_audit.sqlite3
+      BAYORA_SECURITY_CONFIG: /app/data/security-config.json
       BAYORA_LLM_SERVICE_URL: http://llm:8002
       BAYORA_LLM_SERVICE_TOKEN: ${BAYORA_LLM_SERVICE_TOKEN:?Set BAYORA_LLM_SERVICE_TOKEN in .env}
       BAYORA_LLM_MODEL: ${BAYORA_LLM_MODEL:-openrouter/free}
@@ -25,13 +39,18 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
+      - ./policies:/app/policies
+      - ./reports/red-runs:/app/reports/red-runs
     depends_on:
       blue:
-        condition: service_started
+        condition: service_healthy
       llm:
         condition: service_healthy
     networks:
-      - bayora-local
+      - red-gateway
+      - blue-gateway
+      - llm-gateway
+      - gateway-host
     healthcheck:
       test:
         - CMD
@@ -53,12 +72,33 @@ services:
       - 0.0.0.0
       - --port
       - "8001"
+    user: "10001:10001"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 0.5
+    mem_limit: 256m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
     environment:
       BAYORA_BLUE_SERVICE_TOKEN: ${BAYORA_BLUE_SERVICE_TOKEN:?Set BAYORA_BLUE_SERVICE_TOKEN in .env}
     expose:
       - "8001"
     networks:
-      - bayora-local
+      - blue-gateway
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   llm:
     build: .
@@ -71,6 +111,18 @@ services:
       - 0.0.0.0
       - --port
       - "8002"
+    user: "10001:10001"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 0.5
+    mem_limit: 256m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
     environment:
       BAYORA_OPENROUTER_API_KEY: ${BAYORA_OPENROUTER_API_KEY:-}
       BAYORA_LLM_MODEL: ${BAYORA_LLM_MODEL:-openrouter/free}
@@ -78,7 +130,8 @@ services:
     expose:
       - "8002"
     networks:
-      - bayora-local
+      - llm-gateway
+      - llm-egress
     healthcheck:
       test:
         - CMD
@@ -98,6 +151,24 @@ services:
       - run
       - --gateway-url
       - http://gateway:8000
+      - --case
+      - denied-red-resource-read
+      - --case
+      - invalid-test-identifier
+      - --case
+      - policy-denied-llm-generation
+    user: "10001:10001"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 0.5
+    mem_limit: 256m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
     environment:
       BAYORA_GATEWAY_RED_TOKEN: ${BAYORA_GATEWAY_RED_TOKEN:?Set BAYORA_GATEWAY_RED_TOKEN in .env}
     volumes:
@@ -106,8 +177,16 @@ services:
       gateway:
         condition: service_healthy
     networks:
-      - bayora-local
+      - red-gateway
 
 networks:
-  bayora-local:
+  red-gateway:
+    internal: true
+  blue-gateway:
+    internal: true
+  llm-gateway:
+    internal: true
+  llm-egress:
+    driver: bridge
+  gateway-host:
     driver: bridge

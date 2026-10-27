@@ -1,6 +1,8 @@
 import sqlite3
 from datetime import datetime
 
+import pytest
+
 from backend.audit_store import AuditStore, utc_timestamp
 
 
@@ -30,6 +32,7 @@ def test_records_complete_events_with_utc_separation_fields(tmp_path):
     assert stored["observed_outcome"] == "NOT_EXECUTED"
     assert stored["verification_result"] == "NOT_VERIFIED"
     assert datetime.fromisoformat(stored["timestamp_utc"].replace("Z", "+00:00")).utcoffset().total_seconds() == 0
+    assert store.verify_integrity()["valid"] is True
 
 
 def test_record_ignores_caller_outcome_and_verification_values(tmp_path):
@@ -114,6 +117,7 @@ def test_existing_database_is_migrated_additively(tmp_path):
     stored = store.get_event("legacy")
     assert stored["reason"] == "legacy row"
     assert stored["operation_executed"] == 0
+    assert store.verify_integrity()["valid"] is True
     store.record_pending_operation(event("new"))
     assert store.get_event("new")["observed_outcome"] == "PENDING"
 
@@ -129,3 +133,81 @@ def test_operation_audit_rejects_inconsistent_status(tmp_path):
     else:
         raise AssertionError("inconsistent operation state should fail")
     assert store.get_event("invalid-transition")["observed_outcome"] == "PENDING"
+
+
+def test_integrity_chain_tracks_each_operation_revision(tmp_path):
+    store = AuditStore(tmp_path / "audit.sqlite3")
+    store.initialize()
+    store.record_pending_operation(event("chain-operation"))
+    store.complete_operation("chain-operation", True, "SUCCEEDED", "VERIFIED")
+
+    result = store.verify_integrity()
+    assert result == {
+        "valid": True,
+        "checked_entries": 2,
+        "checked_events": 1,
+        "reason": "integrity chain verified",
+    }
+
+
+def test_integrity_verification_survives_store_reopen(tmp_path):
+    database = tmp_path / "persistent-audit.sqlite3"
+    first = AuditStore(database)
+    first.initialize()
+    first.record(event("persistent-event"))
+
+    reopened = AuditStore(database)
+    reopened.initialize()
+    assert reopened.verify_integrity()["valid"] is True
+    assert reopened.get_event("persistent-event")["event_id"] == "persistent-event"
+
+
+def test_integrity_verification_detects_unauthorized_event_modification(tmp_path):
+    database = tmp_path / "tampered-audit.sqlite3"
+    store = AuditStore(database)
+    store.initialize()
+    store.record(event("tampered-event"))
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE audit_events SET verification_result = 'VERIFIED' WHERE event_id = ?",
+            ("tampered-event",),
+        )
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "audit events do not match their latest integrity snapshots"
+    with pytest.raises(sqlite3.DatabaseError, match="integrity verification failed"):
+        store.record(event("after-tamper"))
+
+
+def test_integrity_verification_detects_missing_audit_event(tmp_path):
+    database = tmp_path / "missing-audit.sqlite3"
+    store = AuditStore(database)
+    store.initialize()
+    store.record(event("removed-event"))
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM audit_events WHERE event_id = ?", ("removed-event",))
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "audit events do not match their latest integrity snapshots"
+
+
+def test_missing_integrity_initialization_marker_does_not_rebaseline(tmp_path):
+    database = tmp_path / "missing-integrity-marker.sqlite3"
+    store = AuditStore(database)
+    store.initialize()
+    store.record(event("marker-event"))
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "DELETE FROM audit_integrity_meta WHERE key = 'baseline_initialized'"
+        )
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "audit integrity initialization marker is missing or invalid"
+    with pytest.raises(sqlite3.DatabaseError, match="initialization marker is missing"):
+        store.initialize()

@@ -1,9 +1,13 @@
 import re
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import create_app
+
+
+TEST_CALLER_TOKENS = {"red": "api-test-red-token", "blue": "api-test-blue-token"}
 
 
 @pytest.fixture
@@ -14,8 +18,11 @@ def make_client(tmp_path):
             rules_path=selected_rules,
             audit_db_path=tmp_path / "api-audit.sqlite3",
             audit_store=audit_store,
+            gateway_caller_tokens=TEST_CALLER_TOKENS,
         )
-        return TestClient(app)
+        test_client = TestClient(app)
+        test_client.headers["Authorization"] = f"Bearer {TEST_CALLER_TOKENS['red']}"
+        return test_client
     return factory
 
 
@@ -29,6 +36,7 @@ def test_allow_decision_is_recorded_with_separate_outcome_fields(make_client):
         assert response.status_code == 200
         body = response.json()
         assert body["decision"] == "ALLOW"
+        assert body["role"] == "red"
         assert body["matched_rule_id"] == "red-approved-tests"
         assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", body["session_id"])
         assert body["observed_outcome"] == "NOT_EXECUTED"
@@ -64,6 +72,145 @@ def test_explicit_deny_and_default_deny_are_audited(make_client):
         assert len(audited_events) == 2
         assert all(event["observed_outcome"] == "NOT_EXECUTED" for event in audited_events)
         assert all(event["verification_result"] == "NOT_VERIFIED" for event in audited_events)
+
+
+def test_authenticated_red_cannot_spoof_blue_role_for_policy_or_audit(make_client):
+    with make_client() as client:
+        response = client.post("/policy/decide", json={
+            "role": "blue",
+            "action": "read_artifact",
+            "resource": "blue:report",
+        })
+        assert response.status_code == 200
+        assert response.json()["decision"] == "DENY"
+        assert response.json()["role"] == "red"
+        event = client.get(f"/audit/events/{response.json()['event_id']}").json()
+        assert event["role"] == "red"
+
+
+def test_audit_events_are_scoped_to_authenticated_role(make_client):
+    with make_client() as client:
+        response = client.post(
+            "/policy/decide",
+            json={
+                "role": "red",
+                "action": "read_artifact",
+                "resource": "blue:synthetic-confidential",
+            },
+            headers={"Authorization": f"Bearer {TEST_CALLER_TOKENS['blue']}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["role"] == "blue"
+        assert response.json()["decision"] == "ALLOW"
+        event_id = response.json()["event_id"]
+
+        assert all(event["event_id"] != event_id for event in client.get("/audit/events").json()["events"])
+        assert client.get(f"/audit/events/{event_id}").status_code == 404
+        blue_headers = {"Authorization": f"Bearer {TEST_CALLER_TOKENS['blue']}"}
+        blue_events = client.get("/audit/events", headers=blue_headers).json()["events"]
+        assert any(event["event_id"] == event_id for event in blue_events)
+        assert client.get(f"/audit/events/{event_id}", headers=blue_headers).json()["role"] == "blue"
+
+
+def test_session_role_switch_is_denied_and_audited(make_client):
+    with make_client() as client:
+        first = client.post("/policy/decide", json={
+            "session_id": "role-bound-session",
+            "role": "blue",
+            "action": "run_approved_test",
+            "resource": "test:authorized_access",
+        })
+        assert first.status_code == 200
+        assert first.json()["decision"] == "ALLOW"
+        blue_headers = {"Authorization": f"Bearer {TEST_CALLER_TOKENS['blue']}"}
+        switched = client.post("/policy/decide", json={
+            "session_id": "role-bound-session",
+            "role": "red",
+            "action": "read_artifact",
+            "resource": "blue:synthetic-confidential",
+        }, headers=blue_headers)
+        assert switched.status_code == 200
+        assert switched.json()["decision"] == "DENY"
+        assert switched.json()["role"] == "blue"
+        assert switched.json()["matched_rule_id"] == "session-isolation-violation"
+        event = client.get(
+            f"/audit/events/{switched.json()['event_id']}", headers=blue_headers
+        ).json()
+        assert event["decision"] == "DENY"
+        assert "session isolation violation" in event["reason"]
+
+
+def test_protected_gateway_routes_and_audit_reads_reject_missing_credentials(make_client):
+    with make_client() as client:
+        headers = {"Authorization": ""}
+        policy = client.post("/policy/decide", json={
+            "role": "blue",
+            "action": "read_artifact",
+            "resource": "blue:report",
+        }, headers=headers)
+        assert policy.status_code == 401
+        assert client.get("/policy/rules", headers=headers).status_code == 401
+        assert client.get("/audit/events", headers=headers).status_code == 401
+        assert client.get("/audit/integrity", headers=headers).status_code == 401
+        assert client.get("/audit/events").json()["events"] == []
+
+
+def test_audit_api_reports_tampering_and_withholds_unverified_events(make_client, tmp_path):
+    with make_client() as client:
+        response = client.post("/policy/decide", json={
+            "role": "red",
+            "action": "run_approved_test",
+            "resource": "test:authorized_access",
+        })
+        event_id = response.json()["event_id"]
+        assert client.get("/audit/integrity").json()["valid"] is True
+
+        with sqlite3.connect(tmp_path / "api-audit.sqlite3") as connection:
+            connection.execute(
+                "UPDATE audit_events SET reason = 'unauthorized edit' WHERE event_id = ?",
+                (event_id,),
+            )
+
+        integrity = client.get("/audit/integrity")
+        assert integrity.status_code == 200
+        assert integrity.json()["valid"] is False
+        assert client.get("/audit/events").status_code == 503
+        assert client.get(f"/audit/events/{event_id}").status_code == 503
+
+
+def test_audit_feature_routes_are_authenticated_and_role_scoped(make_client):
+    with make_client() as client:
+        for _ in range(3):
+            client.post("/policy/decide", json={
+                "session_id": "anomaly-scan",
+                "role": "blue",
+                "action": "unknown_action",
+                "resource": "test:unapproved",
+            })
+        blue_headers = {"Authorization": f"Bearer {TEST_CALLER_TOKENS['blue']}"}
+        for path in ("/audit/verify", "/audit/anomalies", "/audit/report"):
+            assert client.get(path, headers={"Authorization": ""}).status_code == 401
+
+        verification = client.get("/audit/verify")
+        assert verification.status_code == 200
+        assert verification.json()["valid"] is True
+        assert verification.json()["verified_events"] >= 3
+
+        anomalies = client.get("/audit/anomalies")
+        assert anomalies.status_code == 200
+        assert any(item["type"] == "REPEATED_POLICY_DENIALS" for item in anomalies.json()["anomalies"])
+
+        report = client.get("/audit/report")
+        assert report.status_code == 200
+        assert report.json()["scope_role"] == "red"
+        assert report.json()["audit"]["total_events"] == 3
+        assert "anomaly-scan" in report.text
+        assert "blue" not in report.json()["scope_role"]
+
+        blue_report = client.get("/audit/report", headers=blue_headers)
+        assert blue_report.status_code == 200
+        assert blue_report.json()["scope_role"] == "blue"
+        assert blue_report.json()["audit"]["total_events"] == 0
 
 
 @pytest.mark.parametrize("payload", [

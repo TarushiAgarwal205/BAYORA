@@ -68,9 +68,10 @@ TEST_CASES = (
         "case_id": "invalid-test-identifier",
         "description": "An unknown test identifier receives a policy DENY.",
         "endpoint": "/policy/decide",
+        "caller_role": "red",
         "input": {
             "session_id": "red-run-invalid-id",
-            "role": "red",
+            "role": "blue",
             "action": "run_approved_test",
             "resource": "test:not-approved",
         },
@@ -84,14 +85,15 @@ TEST_CASES = (
     },
     {
         "case_id": "policy-denied-llm-generation",
-        "description": "A Blue role cannot generate an LLM client response for an approved test ID.",
+        "description": "An unapproved LLM resource is denied; the body role cannot override the Red credential.",
         "endpoint": "/llm/generate",
+        "caller_role": "red",
         "preflight": True,
         "input": {
             "session_id": "red-run-denied-llm",
             "role": "blue",
             "action": "generate_client_response",
-            "resource": "test:authorized_access",
+            "resource": "test:not-approved",
             "prompt": "Return a short synthetic test response.",
         },
         "expected": {
@@ -181,7 +183,7 @@ def _response_summary(response):
     }
 
 
-def _audit_evidence(client, event_id):
+def _audit_evidence(client, event_id, headers):
     if not isinstance(event_id, str):
         return None
     try:
@@ -189,7 +191,7 @@ def _audit_evidence(client, event_id):
     except (ValueError, TypeError, AttributeError):
         return None
     try:
-        response = client.get(f"/audit/events/{event_id}")
+        response = client.get(f"/audit/events/{event_id}", headers=headers)
     except httpx.RequestError:
         return None
     if response.status_code != 200:
@@ -200,15 +202,15 @@ def _audit_evidence(client, event_id):
     return {field: body.get(field) for field in _AUDIT_FIELDS}
 
 
-def _policy_preflight(client, case):
+def _policy_preflight(client, case, headers):
     preflight_input = case.get("preflight_input", case["input"])
     payload = {key: value for key, value in preflight_input.items() if key != "prompt"}
     try:
-        response = client.post("/policy/decide", json=payload)
+        response = client.post("/policy/decide", json=payload, headers=headers)
     except httpx.RequestError:
         return {"http_status": None, "decision": None, "audit_evidence": None}
     summary = _response_summary(response)
-    evidence = _audit_evidence(client, summary["event_id"])
+    evidence = _audit_evidence(client, summary["event_id"], headers)
     return {**summary, "audit_evidence": evidence}
 
 
@@ -284,13 +286,24 @@ def _run_case(client, case, auth_tokens):
         "result": "INCONCLUSIVE",
     }
 
+    caller_role = case.get("caller_role")
+    token = auth_tokens.get(caller_role, "")
+    if not token:
+        result["reason"] = (
+            "required Gateway caller credential is not configured; operation was skipped"
+        )
+        return result
+    headers = {"Authorization": f"Bearer {token}"}
+
     if case.get("preflight"):
-        preflight = _policy_preflight(client, case)
+        preflight = _policy_preflight(client, case, headers)
         result["preflight"] = preflight
         preflight_audit = preflight.get("audit_evidence") or {}
         preflight_input = case.get("preflight_input", case["input"])
         if (
-            not _evidence_matches_input(preflight_audit, preflight_input)
+            not _evidence_matches_input(
+                preflight_audit, preflight_input, expected_role=caller_role
+            )
             or preflight.get("http_status") != 200
             or preflight.get("decision") != "DENY"
             or preflight_audit.get("decision") != "DENY"
@@ -302,16 +315,6 @@ def _run_case(client, case, auth_tokens):
             )
             return result
 
-    headers = None
-    if case["endpoint"] == "/resource/read":
-        token = auth_tokens.get(case.get("caller_role"), "")
-        if not token:
-            result["reason"] = (
-                "required Gateway caller credential is not configured; operation was skipped"
-            )
-            return result
-        headers = {"Authorization": f"Bearer {token}"}
-
     try:
         response = client.post(case["endpoint"], json=case["input"], headers=headers)
     except httpx.RequestError:
@@ -319,7 +322,7 @@ def _run_case(client, case, auth_tokens):
         return result
 
     observed = _response_summary(response)
-    audit_evidence = _audit_evidence(client, observed.get("event_id"))
+    audit_evidence = _audit_evidence(client, observed.get("event_id"), headers)
     result["observed"] = observed
     result["audit_evidence"] = audit_evidence
     result["result"] = _evaluate(case, observed, audit_evidence)
@@ -339,6 +342,7 @@ def run_suite(
     results_dir=None,
     auth_tokens=None,
     selected_cases=None,
+    run_id=None,
 ):
     base_url = _local_gateway_url(gateway_url)
     selected_auth_tokens = (
@@ -356,7 +360,13 @@ def run_suite(
             case for case in TEST_CASES if case["case_id"] in selected_ids
         )
 
-    run_id = str(uuid4())
+    if run_id is not None:
+        try:
+            run_id = str(UUID(run_id))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise RunnerError("run ID is invalid") from error
+    else:
+        run_id = str(uuid4())
     client = httpx.Client(
         base_url=base_url,
         transport=transport,
@@ -452,6 +462,10 @@ def main(argv=None):
         return 2
 
     print(json.dumps(output, indent=2, sort_keys=True))
+    if args.command == "run" and (
+        output["summary"]["FAIL"] or output["summary"]["INCONCLUSIVE"]
+    ):
+        return 1
     return 0
 
 

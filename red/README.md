@@ -11,4 +11,6 @@ The cases cover an allowed read of Bayora's synthetic resource, a denied Red rea
 
 Reports are saved under `reports/red-runs/` and contain each fixed input, expected behavior, observed HTTP fields, and selected audit fields. Protected resource content and model output are not copied into the report. A case is PASS only when its expected HTTP result and audit evidence agree; absent or ambiguous evidence is INCONCLUSIVE.
 
+The `run` command exits with status 1 when any selected case FAILS or is INCONCLUSIVE, and status 0 only when every selected case passes. The Compose Red service selects the three cases that use the Red identity; the four-case host run also uses the separate Blue credential for its positive control.
+
 This is a local deterministic gateway check harness, not a general attack runner or a broad security assessment. Policy-only and LLM cases still use caller-declared roles; the Gateway caller tokens are a prototype shared-secret mechanism, not production identity verification.

@@ -127,16 +127,16 @@ class OpenRouterClient:
         return content
 
 
-def create_llm_client():
+def create_llm_client(*, api_key=None, model=None):
     """Use the separate LLM service when configured; otherwise use OpenRouter directly."""
     service_url = os.environ.get("BAYORA_LLM_SERVICE_URL", "")
     service_token = os.environ.get("BAYORA_LLM_SERVICE_TOKEN", "")
-    model = os.environ.get("BAYORA_LLM_MODEL", "openrouter/free")
+    selected_model = model or os.environ.get("BAYORA_LLM_MODEL", "openrouter/free")
 
     if service_url:
-        return LLMServiceClient(service_url, service_token, model)
+        return LLMServiceClient(service_url, service_token, selected_model)
 
     return OpenRouterClient(
-        os.environ.get("BAYORA_OPENROUTER_API_KEY", ""),
-        model,
+        api_key if api_key is not None else os.environ.get("BAYORA_OPENROUTER_API_KEY", ""),
+        selected_model,
     )

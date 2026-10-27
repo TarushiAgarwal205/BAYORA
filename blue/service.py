@@ -17,6 +17,10 @@ def create_blue_app(service_token=None):
     expected_token = service_token if service_token is not None else os.environ.get("BAYORA_BLUE_SERVICE_TOKEN", "")
     app = FastAPI(title="Bayora Blue Team Resource Service")
 
+    @app.get("/health")
+    def health():
+        return {"status": "healthy"}
+
     @app.get("/internal/resources/{resource_id}")
     def read_resource(resource_id: str, authorization: str | None = Header(default=None)):
         if not expected_token:

@@ -8,6 +8,9 @@ from backend.llm_client import OPENROUTER_CHAT_COMPLETIONS_URL, OpenRouterClient
 from backend.main import create_app
 
 
+TEST_CALLER_TOKENS = {"red": "llm-test-red-token", "blue": "llm-test-blue-token"}
+
+
 def payload(**overrides):
     value = {
         "session_id": "llm-test",
@@ -23,8 +26,14 @@ def payload(**overrides):
 def make_client(tmp_path, handler, *, api_key="test-only-key", model="mock/provider-model"):
     transport = httpx.MockTransport(handler)
     llm_client = OpenRouterClient(api_key, model, transport=transport, timeout=1.0)
-    app = create_app(audit_db_path=tmp_path / "llm-audit.sqlite3", llm_client=llm_client)
-    return TestClient(app)
+    app = create_app(
+        audit_db_path=tmp_path / "llm-audit.sqlite3",
+        llm_client=llm_client,
+        gateway_caller_tokens=TEST_CALLER_TOKENS,
+    )
+    client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {TEST_CALLER_TOKENS['red']}"
+    return client
 
 
 def get_events(client):
@@ -64,7 +73,7 @@ def test_authorized_request_calls_openrouter_and_keeps_output_unverified(tmp_pat
             event["verification_result"]) == ("ALLOW", 1, "SUCCEEDED", "NOT_VERIFIED")
 
 
-def test_policy_denial_does_not_call_provider(tmp_path):
+def test_blue_credential_cannot_use_body_role_to_generate_as_red(tmp_path):
     calls = []
 
     def respond(request):
@@ -72,13 +81,72 @@ def test_policy_denial_does_not_call_provider(tmp_path):
         return httpx.Response(200, json={"choices": []})
 
     with make_client(tmp_path, respond) as client:
-        response = client.post("/llm/generate", json=payload(role="blue"))
+        response = client.post(
+            "/llm/generate",
+            json=payload(role="red"),
+            headers={"Authorization": f"Bearer {TEST_CALLER_TOKENS['blue']}"},
+        )
         assert response.status_code == 403
         assert calls == []
         assert "model_output" not in response.text
-        event = get_events(client)[0]
+        event = client.get(
+            "/audit/events", headers={"Authorization": f"Bearer {TEST_CALLER_TOKENS['blue']}"}
+        ).json()["events"][0]
+        assert event["role"] == "blue"
         assert (event["decision"], event["operation_executed"], event["observed_outcome"],
                 event["verification_result"]) == ("DENY", 0, "NOT_EXECUTED", "NOT_VERIFIED")
+
+
+def test_unauthenticated_llm_request_cannot_self_assign_red_role(tmp_path):
+    calls = []
+    with make_client(
+        tmp_path,
+        lambda request: calls.append(request) or httpx.Response(200, json={}),
+    ) as client:
+        response = client.post(
+            "/llm/generate", json=payload(role="red"), headers={"Authorization": ""}
+        )
+        assert response.status_code == 401
+        assert calls == []
+        assert get_events(client) == []
+
+
+def test_red_credential_overrides_spoofed_blue_role(tmp_path):
+    with make_client(
+        tmp_path,
+        lambda request: httpx.Response(200, json={
+            "choices": [{"message": {"content": "Mocked output."}}]
+        }),
+    ) as client:
+        response = client.post("/llm/generate", json=payload(role="blue"))
+        assert response.status_code == 200
+        event = get_events(client)[0]
+        assert event["role"] == "red"
+
+
+def test_llm_requests_keep_session_prompts_separate(tmp_path):
+    captured = []
+
+    def respond(request):
+        captured.append(json.loads(request.content)["messages"][0]["content"])
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "Mocked session response."}}]
+        })
+
+    with make_client(tmp_path, respond) as client:
+        first = client.post(
+            "/llm/generate",
+            json=payload(session_id="session-one", prompt="First session marker."),
+        )
+        second = client.post(
+            "/llm/generate",
+            json=payload(session_id="session-two", prompt="Second session marker."),
+        )
+
+    assert first.status_code == second.status_code == 200
+    assert captured == ["First session marker.", "Second session marker."]
+    assert "Second session marker." not in captured[0]
+    assert "First session marker." not in captured[1]
 
 
 def test_provider_failure_is_sanitized_and_audited_unknown(tmp_path):
@@ -164,6 +232,38 @@ def test_invalid_prompt_is_rejected_before_audit_or_provider_call(tmp_path):
 def test_openrouter_client_defaults_model_and_requires_no_network_for_missing_key():
     client = OpenRouterClient("")
     assert client.model == "openrouter/free"
+
+
+def test_gateway_passes_configured_provider_settings_to_default_client(
+    monkeypatch, tmp_path
+):
+    observed = {}
+
+    async def fake_generate(client, prompt):
+        observed.update(api_key=client.api_key, model=client.model, prompt=prompt)
+        return "Mocked configured response."
+
+    monkeypatch.delenv("BAYORA_LLM_SERVICE_URL", raising=False)
+    monkeypatch.setattr(OpenRouterClient, "generate", fake_generate)
+    monkeypatch.setattr("backend.main.OPENROUTER_API_KEY", "test-configured-key")
+    monkeypatch.setattr("backend.main.LLM_MODEL", "test/configured-model")
+
+    app = create_app(
+        audit_db_path=tmp_path / "configured-client-audit.sqlite3",
+        gateway_caller_tokens=TEST_CALLER_TOKENS,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/llm/generate", json=payload(),
+            headers={"Authorization": f"Bearer {TEST_CALLER_TOKENS['red']}"},
+        )
+
+    assert response.status_code == 200
+    assert observed == {
+        "api_key": "test-configured-key",
+        "model": "test/configured-model",
+        "prompt": payload()["prompt"],
+    }
 
 
 def test_local_env_reader_parses_only_selected_variables(tmp_path):

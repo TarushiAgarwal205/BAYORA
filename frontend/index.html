@@ -18,8 +18,27 @@
       font-family: Arial, sans-serif;
     }
 
+    /* Accessibility: Skip Link */
+    .skip-link {
+      position: absolute;
+      top: -50px;
+      left: 16px;
+      background: #60a5fa;
+      color: #081426;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-weight: bold;
+      text-decoration: none;
+      z-index: 1000;
+      transition: top 0.2s ease;
+    }
+
+    .skip-link:focus {
+      top: 16px;
+    }
+
     main {
-      max-width: 900px;
+      max-width: 960px;
       margin: auto;
     }
 
@@ -28,7 +47,7 @@
       border: 1px solid #29364d;
       border-radius: 14px;
       padding: 24px;
-      margin-top: 20px;
+      margin-top: 24px;
     }
 
     h1 {
@@ -37,6 +56,7 @@
 
     h2 {
       margin-top: 0;
+      font-size: 1.25rem;
     }
 
     .muted {
@@ -46,11 +66,12 @@
 
     .status {
       display: inline-block;
-      padding: 8px 12px;
+      padding: 8px 14px;
       border-radius: 20px;
       background: #25344a;
       font-size: 13px;
       margin-top: 8px;
+      font-weight: 500;
     }
 
     .online,
@@ -71,10 +92,12 @@
       display: block;
       margin: 16px 0 7px;
       font-size: 14px;
+      font-weight: 500;
     }
 
     input,
-    select {
+    select,
+    textarea {
       width: 100%;
       padding: 12px;
       border-radius: 8px;
@@ -82,17 +105,31 @@
       background: #0b1120;
       color: white;
       font-size: 15px;
+      transition: border-color 0.15s ease;
+    }
+
+    /* Keyboard navigation focus ring */
+    input:focus-visible,
+    select:focus-visible,
+    textarea:focus-visible,
+    button:focus-visible,
+    a:focus-visible {
+      outline: 2px solid #60a5fa;
+      outline-offset: 2px;
     }
 
     button {
-      margin-top: 20px;
-      padding: 12px 18px;
+      margin-top: 18px;
+      padding: 12px 20px;
       border: 0;
       border-radius: 8px;
       background: #60a5fa;
       color: #081426;
       font-weight: bold;
       cursor: pointer;
+      font-size: 14px;
+      transition: background 0.15s ease;
+      min-height: 44px;
     }
 
     button:hover:not(:disabled) {
@@ -102,6 +139,16 @@
     button:disabled {
       opacity: 0.6;
       cursor: wait;
+    }
+
+    .btn-secondary {
+      background: #25344a;
+      color: #e5e7eb;
+      margin-left: 8px;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #35445d;
     }
 
     #result {
@@ -133,12 +180,17 @@
       display: block;
       margin-top: 8px;
       overflow-wrap: anywhere;
+      font-size: 1.05rem;
     }
 
     pre {
       white-space: pre-wrap;
       line-height: 1.5;
       overflow-wrap: anywhere;
+      background: #0b1120;
+      padding: 14px;
+      border-radius: 8px;
+      border: 1px solid #29364d;
     }
 
     .section-title {
@@ -146,7 +198,62 @@
     }
 
     .small {
-      font-size: 12px;
+      font-size: 13px;
+    }
+
+    .table-container {
+      overflow-x: auto;
+      margin-top: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #29364d;
+    }
+
+    th {
+      background: #0b1120;
+      color: #9caec5;
+      font-weight: 600;
+    }
+
+    tr:hover td {
+      background: #182338;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+
+    .badge-allow {
+      background: #14532d;
+      color: #86efac;
+    }
+
+    .badge-deny {
+      background: #7f1d1d;
+      color: #fca5a5;
+    }
+
+    .badge-warn {
+      background: #78350f;
+      color: #fde68a;
+    }
+
+    .hidden {
+      display: none !important;
     }
 
     @media (max-width: 600px) {
@@ -162,100 +269,125 @@
 </head>
 
 <body>
-  <main>
-    <h1>Bayora</h1>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
 
-    <p class="muted">
-      Security Gateway · Red Team Policy Testing
-    </p>
+  <main id="main-content">
+    <header>
+      <h1>Bayora</h1>
+      <p class="muted">
+        Security Gateway · Policy Enforcement & Audit Trail
+      </p>
 
-    <span
-      id="serverStatus"
-      class="status checking"
-      role="status"
-      aria-live="polite"
-    >
-      Checking backend...
-    </span>
+      <span
+        id="serverStatus"
+        class="status checking"
+        role="status"
+        aria-live="polite"
+      >
+        Checking backend...
+      </span>
+    </header>
 
-    <section class="panel">
-      <h2>Policy Evaluation</h2>
+    <!-- Panel 1: Policy & Resource Request Form -->
+    <section class="panel" role="region" aria-labelledby="eval-heading">
+      <h2 id="eval-heading">Policy Evaluation & Protected Resources</h2>
 
       <p class="muted">
-        Submit a request to the Bayora policy engine. The gateway evaluates
-        configured rules and records the decision in its audit store.
-        Policy evaluation does not execute the requested operation.
+        Submit a request to the Bayora policy engine. Evaluate configured rules,
+        enforce session isolation, or test authenticated protected resource reads.
       </p>
 
       <form id="testForm">
-        <label for="session">Session ID</label>
+        <label for="requestMode">Execution Mode</label>
+        <select id="requestMode">
+          <option value="decide">Evaluate Policy Only (/policy/decide)</option>
+          <option value="read">Execute Protected Read (/resource/read)</option>
+          <option value="llm">Inspect Prompt and Generate (/llm/generate)</option>
+        </select>
 
+        <label for="session">Session ID</label>
         <input
           id="session"
           value="test-001"
           maxlength="64"
           pattern="[A-Za-z0-9_-]+"
           required
+          aria-describedby="session-hint"
         >
+        <span id="session-hint" class="muted small">Session identifier bound to the first authenticated role.</span>
 
-        <label for="role">Requester Role</label>
-
+        <label for="role">Untrusted Request Role Claim (ignored for authorization)</label>
         <select id="role">
           <option value="red">Red Team</option>
           <option value="blue">Blue Team</option>
         </select>
 
-        <label for="resource">Target Resource</label>
+        <div id="tokenContainer">
+          <label for="gatewayToken">Gateway Caller Bearer Token</label>
+          <input
+            id="gatewayToken"
+            type="password"
+            placeholder="Gateway Red or Blue bearer token"
+            autocomplete="off"
+            aria-describedby="token-hint"
+          >
+          <span id="token-hint" class="muted small">Required for protected features. Management tools require the separately configured admin token. Role comes from this credential; the dashboard does not save it.</span>
+        </div>
 
+        <label for="resource">Target Resource</label>
         <select id="resource">
           <option value="test:authorized_access">
-            Authorized Access Test
+            Authorized Access Test (test:authorized_access)
           </option>
-
           <option value="test:unauthorized_artifact_access">
-            Unauthorized Artifact Access Test
+            Unauthorized Artifact Access (test:unauthorized_artifact_access)
           </option>
-
           <option value="test:session_isolation">
-            Session Isolation Test
+            Session Isolation Test (test:session_isolation)
           </option>
-
+          <option value="blue:synthetic-confidential">
+            Blue Synthetic Confidential Fixture (blue:synthetic-confidential)
+          </option>
           <option value="blue:artifact">
-            Blue Team Artifact
+            Blue Team Artifact (blue:artifact)
           </option>
         </select>
 
         <label for="action">Requested Action</label>
-
         <select id="action">
           <option value="run_approved_test">
-            Run Approved Test
+            Run Approved Test (run_approved_test)
           </option>
-
-          <option value="generate_client_response">
-            Generate Client Response
-          </option>
-
           <option value="read_artifact">
-            Read Artifact
+            Read Artifact (read_artifact)
+          </option>
+          <option value="generate_client_response">
+            Generate Client Response (generate_client_response)
           </option>
         </select>
 
+        <div id="promptInputContainer" class="hidden">
+          <label for="promptInput">Client prompt (sent only after policy and inspection allow it)</label>
+          <textarea id="promptInput" rows="5" maxlength="20000" placeholder="Enter a test prompt. The Gateway stores a digest and inspection result, not this text."></textarea>
+        </div>
+
         <button id="submitButton" type="submit">
-          Run Policy Check
+          Run Request
         </button>
       </form>
 
-      <div id="result" aria-live="polite">
-        Submit a request to see the policy decision.
+      <div id="result" role="region" aria-live="polite" aria-atomic="true">
+        Submit a request to see the policy decision or resource read outcome.
       </div>
+      <pre id="promptInspectionResult" class="muted small" aria-live="polite">Prompt inspection has not run.</pre>
     </section>
 
-    <section class="panel">
-      <h2>Latest Audit Evidence</h2>
+    <!-- Panel 2: Latest Audit Evidence -->
+    <section class="panel" role="region" aria-labelledby="evidence-heading">
+      <h2 id="evidence-heading">Latest Audit Evidence</h2>
 
       <p class="muted">
-        Details returned by the gateway for the latest policy evaluation.
+        Details returned by the gateway for the latest request.
       </p>
 
       <div class="grid">
@@ -291,13 +423,167 @@
       </div>
 
       <h3 class="section-title">Decision Details</h3>
-
       <pre id="auditReason" class="muted">No decision recorded in this dashboard session yet.</pre>
 
       <p class="muted small">
         This panel displays the latest response received by this browser.
         It is not a complete audit-log viewer or an independent integrity check.
       </p>
+    </section>
+
+    <!-- Panel 3: Cryptographic Audit Hash Chain Verification -->
+    <section class="panel" role="region" aria-labelledby="chain-heading">
+      <h2 id="chain-heading">Audit Log Cryptographic Integrity</h2>
+      <p class="muted">
+        Verifies the tamper-evident SHA-256 hash chain of the SQLite audit store.
+      </p>
+      <div class="grid">
+        <div class="metric">
+          Chain Integrity
+          <strong id="chainStatus">—</strong>
+        </div>
+        <div class="metric">
+          Verified Records
+          <strong id="chainVerifiedCount">—</strong>
+        </div>
+        <div class="metric">
+          Total Records
+          <strong id="chainTotalCount">—</strong>
+        </div>
+      </div>
+      <p id="chainDetails" class="muted small" style="margin-top: 14px;">Integrity check not run yet.</p>
+      <button id="verifyChainButton" type="button">Verify Audit Chain</button>
+    </section>
+
+    <!-- Panel 4: Active Anomalies & Abuse Detection -->
+    <section class="panel" role="region" aria-labelledby="anomalies-heading">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2 id="anomalies-heading" style="margin: 0;">Security Anomaly Monitor</h2>
+        <span id="anomaliesBadge" class="badge badge-allow">0 Detected</span>
+      </div>
+      <p class="muted">
+        Monitors audit records for repeated policy denials, traversal attempts, and session boundary violations.
+      </p>
+      <div id="anomaliesList" class="muted small" style="margin-top: 12px;">No security anomalies detected.</div>
+      <button id="refreshAnomaliesButton" type="button" class="btn-secondary" style="margin-top: 14px; margin-left: 0;">
+        Refresh Anomalies
+      </button>
+    </section>
+
+    <section class="panel" role="region" aria-labelledby="report-heading">
+      <h2 id="report-heading">Evidence Summary</h2>
+      <p class="muted">Generates a role-scoped summary from audit integrity, policy status, and configured anomaly indicators.</p>
+      <button id="generateReportButton" type="button" class="btn-secondary">Generate Evidence Summary</button>
+      <pre id="evidenceReport" class="muted small" role="status" aria-live="polite">No report generated yet.</pre>
+    </section>
+
+    <!-- Panel 5: Recent Audit Trail Feed -->
+    <section class="panel" role="region" aria-labelledby="trail-heading">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+        <h2 id="trail-heading" style="margin: 0;">Recent Audit Trail</h2>
+        <div>
+          <label for="filterDecision" style="display: inline; margin-right: 8px; font-size: 13px;">Filter:</label>
+          <select id="filterDecision" style="width: auto; padding: 6px 10px; display: inline-block;">
+            <option value="">All Decisions</option>
+            <option value="ALLOW">ALLOW Only</option>
+            <option value="DENY">DENY Only</option>
+          </select>
+          <button id="refreshEventsButton" type="button" class="btn-secondary" style="margin-top: 0; padding: 6px 12px; font-size: 12px; min-height: 32px;">
+            Refresh Feed
+          </button>
+        </div>
+      </div>
+      <div class="table-container">
+        <table aria-label="Recent audit log events">
+          <thead>
+            <tr>
+              <th scope="col">Timestamp (UTC)</th>
+              <th scope="col">Decision</th>
+              <th scope="col">Role</th>
+              <th scope="col">Action</th>
+              <th scope="col">Resource</th>
+              <th scope="col">Outcome</th>
+            </tr>
+          </thead>
+          <tbody id="auditTableBody">
+            <tr>
+              <td colspan="6" class="muted" style="text-align: center;">No audit events loaded.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" role="region" aria-labelledby="admin-heading">
+      <h2 id="admin-heading">Policy and Incident Administration</h2>
+      <p class="muted">Requires the separately configured administrator bearer token. Red and Blue caller tokens cannot use these management routes.</p>
+
+      <div class="grid">
+        <section aria-labelledby="policy-console-heading">
+          <h3 id="policy-console-heading">Policy Management Console</h3>
+          <button id="refreshPoliciesButton" type="button" class="btn-secondary">Load Rules</button>
+          <label for="managedPolicySelect">Existing rule</label>
+          <select id="managedPolicySelect"><option value="">Load rules first</option></select>
+          <label for="managedPolicyJson">Rule JSON</label>
+          <textarea id="managedPolicyJson" rows="11" spellcheck="false"></textarea>
+          <div>
+            <button id="createPolicyButton" type="button">Create Rule</button>
+            <button id="updatePolicyButton" type="button" class="btn-secondary">Save Selected</button>
+            <button id="togglePolicyButton" type="button" class="btn-secondary">Enable / Disable</button>
+            <button id="deletePolicyButton" type="button" class="btn-secondary">Delete Selected</button>
+          </div>
+          <h4>Dry-run (does not execute a resource operation)</h4>
+          <label for="dryRunRole">Target role for simulation</label>
+          <select id="dryRunRole"><option value="red">Red</option><option value="blue">Blue</option></select>
+          <label for="dryRunAction">Action</label>
+          <input id="dryRunAction" value="read_artifact" maxlength="64">
+          <label for="dryRunResource">Resource</label>
+          <input id="dryRunResource" value="blue:synthetic-confidential" maxlength="64">
+          <button id="dryRunPolicyButton" type="button" class="btn-secondary">Evaluate Dry-run</button>
+          <pre id="policyConsoleOutput" class="small" aria-live="polite">Administrator policy actions have not run.</pre>
+        </section>
+
+        <section aria-labelledby="detection-config-heading">
+          <h3 id="detection-config-heading">Detection Configuration</h3>
+          <p class="muted small">Prompt inspection, high-severity blocking, authentication, and audit integrity are required controls and cannot be disabled here.</p>
+          <button id="loadConfigButton" type="button" class="btn-secondary">Load Configuration</button>
+          <label for="mediumSeverityAction">Medium-severity prompt action</label>
+          <select id="mediumSeverityAction"><option value="FLAG">FLAG (block generation)</option><option value="DENY">DENY</option></select>
+          <label for="denialThreshold">Repeated denial indicator threshold (3–10)</label>
+          <input id="denialThreshold" type="number" min="3" max="10" value="3">
+          <button id="saveConfigButton" type="button">Save Detection Settings</button>
+          <pre id="configOutput" class="small" aria-live="polite">Detection configuration has not been loaded.</pre>
+
+          <h3>Security Test Scenario Library</h3>
+          <p class="muted small">Runs only the fixed local Red runner scenarios through the Gateway. The policy-denied LLM case does not call the provider.</p>
+          <button id="loadScenariosButton" type="button" class="btn-secondary">Load Scenarios</button>
+          <div id="scenarioList" class="small" aria-live="polite">Scenario library not loaded.</div>
+          <button id="runScenariosButton" type="button">Run Selected Scenarios</button>
+          <button id="exportScenarioButton" type="button" class="btn-secondary">Download Latest Scenario JSON</button>
+          <pre id="scenarioOutput" class="small" aria-live="polite">No scenario evidence loaded.</pre>
+        </section>
+      </div>
+
+      <h3>Incident Investigation Workspace</h3>
+      <div class="grid">
+        <div>
+          <label for="incidentQuery">Search audit history</label>
+          <input id="incidentQuery" maxlength="100" placeholder="event, session, action, resource, or reason">
+          <label for="incidentRole">Role filter</label>
+          <select id="incidentRole"><option value="">All roles</option><option value="red">Red</option><option value="blue">Blue</option><option value="admin">Admin</option></select>
+        </div>
+        <div>
+          <label for="incidentDecision">Decision filter</label>
+          <select id="incidentDecision"><option value="">All decisions</option><option value="ALLOW">ALLOW</option><option value="DENY">DENY</option></select>
+          <label for="incidentAction">Action filter</label>
+          <input id="incidentAction" maxlength="64" placeholder="optional action">
+        </div>
+      </div>
+      <button id="searchIncidentsButton" type="button" class="btn-secondary">Search Incidents</button>
+      <button id="exportIncidentsButton" type="button" class="btn-secondary">Export Search as JSON</button>
+      <div id="incidentResults" class="small" aria-live="polite">Incident history not loaded.</div>
+      <pre id="incidentDetail" class="small" aria-live="polite">Select an incident to view details.</pre>
+      <pre id="incidentExport" class="small" aria-live="polite">Incident export not generated.</pre>
     </section>
   </main>
 
@@ -310,6 +596,12 @@
     const result = document.getElementById("result");
     const statusBadge = document.getElementById("serverStatus");
     const button = document.getElementById("submitButton");
+    const requestMode = document.getElementById("requestMode");
+    const tokenContainer = document.getElementById("tokenContainer");
+    const gatewayTokenInput = document.getElementById("gatewayToken");
+    const promptInput = document.getElementById("promptInput");
+    const promptInputContainer = document.getElementById("promptInputContainer");
+    const promptInspectionResult = document.getElementById("promptInspectionResult");
 
     const fields = {
       decision: document.getElementById("auditDecision"),
@@ -321,19 +613,41 @@
       reason: document.getElementById("auditReason")
     };
 
+    // The caller credential is required for all protected Gateway and audit routes.
+    requestMode.addEventListener("change", function () {
+      if (requestMode.value === "read") {
+        button.textContent = "Execute Protected Read";
+      } else if (requestMode.value === "llm") {
+        button.textContent = "Inspect and Generate";
+      } else {
+        button.textContent = "Run Policy Check";
+      }
+      promptInputContainer.classList.toggle("hidden", requestMode.value !== "llm");
+      promptInput.required = requestMode.value === "llm";
+    });
+
     // Send an HTTP request and parse the JSON response.
     async function fetchJson(url, options = {}) {
-      const response = await fetch(url, options);
-
+      const headers = new Headers(options.headers || {});
+      const token = gatewayTokenInput.value.trim();
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+      const response = await fetch(url, { ...options, headers: headers });
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
         const detail =
           typeof data.detail === "string"
             ? data.detail
-            : `Request failed with HTTP ${response.status}`;
+            : (data.detail && typeof data.detail === "object" && data.detail.reason)
+              ? data.detail.reason
+              : `Request failed with HTTP ${response.status}`;
 
-        throw new Error(detail);
+        const err = new Error(detail);
+        err.status = response.status;
+        err.data = data;
+        throw err;
       }
 
       return data;
@@ -342,32 +656,21 @@
     // Update the backend connection indicator.
     function setBackendStatus(connected, message) {
       statusBadge.textContent = message;
-
-      statusBadge.classList.remove(
-        "online",
-        "offline",
-        "checking"
-      );
-
-      statusBadge.classList.add(
-        connected ? "online" : "offline"
-      );
+      statusBadge.classList.remove("online", "offline", "checking");
+      statusBadge.classList.add(connected ? "online" : "offline");
     }
 
     // Check the real gateway health endpoint.
     async function checkBackend() {
       statusBadge.textContent = "Checking backend...";
-
       statusBadge.classList.remove("online", "offline");
       statusBadge.classList.add("checking");
 
       try {
-        const data = await fetchJson(`${API_BASE}/health`, {
-          method: "GET",
-          cache: "no-store"
-        });
+        const response = await fetch("/health");
+        const data = await response.json().catch(() => ({}));
 
-        if (data.status !== "healthy") {
+        if (!response.ok || data.status !== "healthy") {
           throw new Error("Gateway health check did not return healthy.");
         }
 
@@ -386,30 +689,45 @@
 
       const heading = document.createElement("h3");
       heading.textContent = `Decision: ${decision}`;
-      heading.className =
-        decision === "ALLOW" ? "allowed" : "blocked";
+      heading.className = decision === "ALLOW" ? "allowed" : "blocked";
 
       const reason = document.createElement("p");
       reason.textContent = data.reason || "No decision details returned.";
 
       const rule = document.createElement("p");
-      rule.textContent =
-        `Matched Rule: ${data.matched_rule_id || "Not provided"}`;
+      rule.textContent = `Matched Rule: ${data.matched_rule_id || "Not provided"}`;
 
       result.append(heading, reason, rule);
+
+      if (data.content) {
+        const contentLabel = document.createElement("strong");
+        contentLabel.textContent = "Protected Resource Content:";
+        const contentPre = document.createElement("pre");
+        contentPre.textContent = data.content;
+        result.append(contentLabel, contentPre);
+      }
+
+      if (data.model_output) {
+        const modelLabel = document.createElement("strong");
+        modelLabel.textContent = "Model output (not a verified security result):";
+        const modelPre = document.createElement("pre");
+        modelPre.textContent = data.model_output;
+        result.append(modelLabel, modelPre);
+      }
 
       fields.decision.textContent = decision;
       fields.rule.textContent = data.matched_rule_id || "—";
       fields.session.textContent = data.session_id || "—";
       fields.event.textContent = data.event_id || "—";
-      fields.outcome.textContent = data.observed_outcome || "—";
-      fields.verification.textContent =
-        data.verification_result || "—";
-
+      fields.outcome.textContent = data.observed_outcome || (data.operation_executed ? "SUCCEEDED" : "NOT_EXECUTED");
+      fields.verification.textContent = data.verification_result || "—";
       fields.reason.textContent = data.reason || "No reason provided.";
+      if (data.inspection) {
+        promptInspectionResult.textContent = JSON.stringify(data.inspection, null, 2);
+      }
     }
 
-    // Submit a policy evaluation request.
+    // Submit a policy evaluation or protected read request.
     form.addEventListener("submit", async function (event) {
       event.preventDefault();
 
@@ -418,9 +736,8 @@
       }
 
       button.disabled = true;
-      button.textContent = "Checking Policy...";
-
-      result.textContent = "Submitting request to the policy engine...";
+      button.textContent = "Processing...";
+      result.textContent = "Submitting request to the gateway...";
 
       try {
         const payload = {
@@ -430,26 +747,36 @@
           action: document.getElementById("action").value
         };
 
-        const data = await fetchJson(
-          `${API_BASE}/policy/decide`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify(payload)
-          }
-        );
+        let endpoint = `${API_BASE}/policy/decide`;
+        const headers = { "Content-Type": "application/json" };
+
+        if (requestMode.value === "read") {
+          endpoint = `${API_BASE}/resource/read`;
+        } else if (requestMode.value === "llm") {
+          endpoint = `${API_BASE}/llm/generate`;
+          payload.action = "generate_client_response";
+          payload.resource = "test:authorized_access";
+          payload.prompt = promptInput.value;
+          promptInspectionResult.textContent = "Submitting prompt for policy and risk inspection...";
+        }
+
+        const data = await fetchJson(endpoint, {
+          method: "POST",
+          headers: headers,
+          body: JSON.stringify(payload)
+        });
 
         displayDecision(data);
         setBackendStatus(true, "Backend Connected");
+        loadRecentEvents();
+        checkChainIntegrity();
       } catch (error) {
-        console.error("Policy evaluation failed:", error);
+        console.error("Gateway request failed:", error);
 
         result.replaceChildren();
 
         const heading = document.createElement("h3");
-        heading.textContent = "Request Failed";
+        heading.textContent = error.status === 403 ? "Decision: DENIED (403)" : "Request Failed";
         heading.className = "blocked";
 
         const message = document.createElement("p");
@@ -457,18 +784,420 @@
 
         result.append(heading, message);
 
-        setBackendStatus(false, "Backend Disconnected");
+        if (error.data && error.data.detail && typeof error.data.detail === "object") {
+          const detail = error.data.detail;
+          fields.decision.textContent = detail.decision || "DENY";
+          fields.rule.textContent = detail.matched_rule_id || "—";
+          fields.outcome.textContent = detail.observed_outcome || "NOT_EXECUTED";
+          fields.verification.textContent = detail.verification_result || "NOT_VERIFIED";
+          fields.reason.textContent = detail.reason || error.message;
+          if (detail.inspection) {
+            promptInspectionResult.textContent = JSON.stringify(detail.inspection, null, 2);
+          }
+        }
+
+        setBackendStatus(true, "Backend Connected");
+        loadRecentEvents();
+        checkAnomalies();
       } finally {
         button.disabled = false;
-        button.textContent = "Run Policy Check";
+      button.textContent = requestMode.value === "read"
+        ? "Execute Protected Read"
+        : requestMode.value === "llm" ? "Inspect and Generate" : "Run Policy Check";
       }
     });
 
     // Run the health check immediately when the page loads.
     checkBackend();
-
-    // Refresh the status periodically.
     setInterval(checkBackend, 15000);
+
+    // Cryptographic Hash Chain Verification
+    const verifyChainBtn = document.getElementById("verifyChainButton");
+    const chainStatus = document.getElementById("chainStatus");
+    const chainVerifiedCount = document.getElementById("chainVerifiedCount");
+    const chainTotalCount = document.getElementById("chainTotalCount");
+    const chainDetails = document.getElementById("chainDetails");
+
+    async function checkChainIntegrity() {
+      if (!verifyChainBtn) return;
+      verifyChainBtn.disabled = true;
+      chainDetails.textContent = "Verifying cryptographic hash chain...";
+      try {
+        const data = await fetchJson(`${API_BASE}/audit/verify`);
+        if (data.valid) {
+          chainStatus.textContent = "VALID (UNKEYED HASH CHAIN CHECKED)";
+          chainStatus.className = "online";
+        } else {
+          chainStatus.textContent = "TAMPERED / BROKEN";
+          chainStatus.className = "offline";
+        }
+        chainVerifiedCount.textContent = data.verified_events ?? "0";
+        chainTotalCount.textContent = data.total_events ?? "0";
+        chainDetails.textContent = data.reason || "Integrity verification complete.";
+      } catch (err) {
+        chainStatus.textContent = "ERROR";
+        chainStatus.className = "offline";
+        chainDetails.textContent = "Verification request failed: " + err.message;
+      } finally {
+        verifyChainBtn.disabled = false;
+      }
+    }
+
+    if (verifyChainBtn) {
+      verifyChainBtn.addEventListener("click", checkChainIntegrity);
+      checkChainIntegrity();
+    }
+
+    // Security Anomalies Monitor
+    const anomaliesList = document.getElementById("anomaliesList");
+    const anomaliesBadge = document.getElementById("anomaliesBadge");
+    const refreshAnomaliesBtn = document.getElementById("refreshAnomaliesButton");
+
+    async function checkAnomalies() {
+      if (!anomaliesList) return;
+      try {
+        const data = await fetchJson(`${API_BASE}/audit/anomalies`);
+        const findings = data.anomalies || [];
+        anomaliesBadge.textContent = `${findings.length} Detected`;
+        if (findings.length === 0) {
+          anomaliesBadge.className = "badge badge-allow";
+          anomaliesList.textContent = "No active security anomalies detected.";
+        } else {
+          anomaliesBadge.className = "badge badge-deny";
+          anomaliesList.replaceChildren();
+          findings.forEach(item => {
+            const row = document.createElement("div");
+            row.style.marginBottom = "6px";
+            const badge = document.createElement("span");
+            badge.className = `badge ${item.severity === "HIGH" ? "badge-deny" : "badge-warn"}`;
+            badge.textContent = String(item.type || "ANOMALY");
+            const details = document.createElement("span");
+            details.textContent = ` ${String(item.details || "")}`;
+            row.append(badge, details);
+            anomaliesList.appendChild(row);
+          });
+        }
+      } catch (err) {
+        console.error("Anomalies fetch failed:", err);
+      }
+    }
+
+    if (refreshAnomaliesBtn) {
+      refreshAnomaliesBtn.addEventListener("click", checkAnomalies);
+      checkAnomalies();
+    }
+
+    // Recent Audit Trail Feed
+    const auditTableBody = document.getElementById("auditTableBody");
+    const filterDecision = document.getElementById("filterDecision");
+    const refreshEventsBtn = document.getElementById("refreshEventsButton");
+
+    async function loadRecentEvents() {
+      if (!auditTableBody) return;
+      try {
+        let url = `${API_BASE}/audit/events?limit=15`;
+        if (filterDecision && filterDecision.value) {
+          url += `&decision=${encodeURIComponent(filterDecision.value)}`;
+        }
+        const data = await fetchJson(url);
+        const events = data.events || [];
+        if (events.length === 0) {
+          const emptyRow = document.createElement("tr");
+          const emptyCell = document.createElement("td");
+          emptyCell.colSpan = 6;
+          emptyCell.className = "muted";
+          emptyCell.style.textAlign = "center";
+          emptyCell.textContent = "No audit events found.";
+          emptyRow.appendChild(emptyCell);
+          auditTableBody.replaceChildren(emptyRow);
+          return;
+        }
+        auditTableBody.replaceChildren();
+        events.forEach(ev => {
+          const tr = document.createElement("tr");
+          const decisionClass = ev.decision === "ALLOW" ? "badge-allow" : "badge-deny";
+          const values = [
+            ev.timestamp_utc ? String(ev.timestamp_utc).slice(11, 19) : "—",
+            String(ev.decision || "—"),
+            String(ev.role || "—"),
+            String(ev.action || "—"),
+            String(ev.resource || "—"),
+            String(ev.observed_outcome || "—")
+          ];
+          values.forEach((value, index) => {
+            const td = document.createElement("td");
+            if (index === 1) {
+              const badge = document.createElement("span");
+              badge.className = `badge ${decisionClass}`;
+              badge.textContent = value;
+              td.appendChild(badge);
+            } else {
+              td.textContent = value;
+            }
+            tr.appendChild(td);
+          });
+          auditTableBody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error("Failed to load audit events:", err);
+      }
+    }
+
+    if (refreshEventsBtn) {
+      refreshEventsBtn.addEventListener("click", loadRecentEvents);
+    }
+    if (filterDecision) {
+      filterDecision.addEventListener("change", loadRecentEvents);
+    }
+
+    const generateReportButton = document.getElementById("generateReportButton");
+    const evidenceReport = document.getElementById("evidenceReport");
+    if (generateReportButton && evidenceReport) {
+      generateReportButton.addEventListener("click", async function () {
+        generateReportButton.disabled = true;
+        evidenceReport.textContent = "Loading role-scoped evidence summary…";
+        try {
+          const report = await fetchJson(`${API_BASE}/audit/report`);
+          evidenceReport.textContent = JSON.stringify(report, null, 2);
+        } catch (err) {
+          evidenceReport.textContent = `Unable to load evidence summary: ${err.message}`;
+        } finally {
+          generateReportButton.disabled = false;
+        }
+      });
+    }
+
+    gatewayTokenInput.addEventListener("change", function () {
+      loadRecentEvents();
+      checkChainIntegrity();
+      checkAnomalies();
+      refreshManagedPolicies();
+      loadDetectionConfig();
+      loadScenarioLibrary();
+    });
+
+    const managedPolicySelect = document.getElementById("managedPolicySelect");
+    const managedPolicyJson = document.getElementById("managedPolicyJson");
+    const policyConsoleOutput = document.getElementById("policyConsoleOutput");
+    let currentPolicyRules = [];
+    let latestScenarioRunId = null;
+
+    function printJson(element, value) {
+      element.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    }
+
+    async function adminRequest(path, options = {}) {
+      return fetchJson(`${API_BASE}${path}`, options);
+    }
+
+    function selectedPolicy() {
+      return currentPolicyRules.find(rule => rule.rule_id === managedPolicySelect.value);
+    }
+
+    async function refreshManagedPolicies() {
+      try {
+        const data = await adminRequest("/admin/policies");
+        currentPolicyRules = data.rules || [];
+        managedPolicySelect.replaceChildren();
+        currentPolicyRules.forEach(rule => {
+          const option = document.createElement("option");
+          option.value = rule.rule_id;
+          option.textContent = `${rule.rule_id} (${rule.enabled === false ? "disabled" : "enabled"})`;
+          managedPolicySelect.appendChild(option);
+        });
+        managedPolicyJson.value = currentPolicyRules.length
+          ? JSON.stringify(currentPolicyRules[0], null, 2) : "";
+        printJson(policyConsoleOutput, { loaded_rules: currentPolicyRules.length });
+      } catch (error) {
+        printJson(policyConsoleOutput, error.message);
+      }
+    }
+
+    managedPolicySelect.addEventListener("change", function () {
+      const rule = selectedPolicy();
+      managedPolicyJson.value = rule ? JSON.stringify(rule, null, 2) : "";
+    });
+    document.getElementById("refreshPoliciesButton").addEventListener("click", refreshManagedPolicies);
+    document.getElementById("createPolicyButton").addEventListener("click", async function () {
+      try {
+        const rule = JSON.parse(managedPolicyJson.value);
+        const result = await adminRequest("/admin/policies", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rule })
+        });
+        printJson(policyConsoleOutput, result);
+        await refreshManagedPolicies();
+      } catch (error) { printJson(policyConsoleOutput, error.message); }
+    });
+    document.getElementById("updatePolicyButton").addEventListener("click", async function () {
+      try {
+        const rule = JSON.parse(managedPolicyJson.value);
+        const id = managedPolicySelect.value;
+        const result = await adminRequest(`/admin/policies/${encodeURIComponent(id)}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rule })
+        });
+        printJson(policyConsoleOutput, result);
+        await refreshManagedPolicies();
+      } catch (error) { printJson(policyConsoleOutput, error.message); }
+    });
+    document.getElementById("togglePolicyButton").addEventListener("click", async function () {
+      try {
+        const rule = selectedPolicy();
+        if (!rule) throw new Error("Select a rule first.");
+        const result = await adminRequest(`/admin/policies/${encodeURIComponent(rule.rule_id)}/enabled`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: rule.enabled === false })
+        });
+        printJson(policyConsoleOutput, result);
+        await refreshManagedPolicies();
+      } catch (error) { printJson(policyConsoleOutput, error.message); }
+    });
+    document.getElementById("deletePolicyButton").addEventListener("click", async function () {
+      try {
+        const rule = selectedPolicy();
+        if (!rule) throw new Error("Select a rule first.");
+        if (!window.confirm(`Delete rule ${rule.rule_id}?`)) return;
+        const result = await adminRequest(`/admin/policies/${encodeURIComponent(rule.rule_id)}`, { method: "DELETE" });
+        printJson(policyConsoleOutput, result);
+        await refreshManagedPolicies();
+      } catch (error) { printJson(policyConsoleOutput, error.message); }
+    });
+    document.getElementById("dryRunPolicyButton").addEventListener("click", async function () {
+      try {
+        const result = await adminRequest("/admin/policies/dry-run", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            role: document.getElementById("dryRunRole").value,
+            action: document.getElementById("dryRunAction").value.trim(),
+            resource: document.getElementById("dryRunResource").value.trim()
+          })
+        });
+        printJson(policyConsoleOutput, result);
+      } catch (error) { printJson(policyConsoleOutput, error.message); }
+    });
+
+    const configOutput = document.getElementById("configOutput");
+    async function loadDetectionConfig() {
+      try {
+        const config = await adminRequest("/admin/config");
+        document.getElementById("mediumSeverityAction").value = config.medium_severity_action;
+        document.getElementById("denialThreshold").value = config.repeated_denial_threshold;
+        printJson(configOutput, config);
+      } catch (error) { printJson(configOutput, error.message); }
+    }
+    document.getElementById("loadConfigButton").addEventListener("click", loadDetectionConfig);
+    document.getElementById("saveConfigButton").addEventListener("click", async function () {
+      try {
+        const result = await adminRequest("/admin/config", {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            medium_severity_action: document.getElementById("mediumSeverityAction").value,
+            repeated_denial_threshold: Number(document.getElementById("denialThreshold").value)
+          })
+        });
+        printJson(configOutput, result);
+      } catch (error) { printJson(configOutput, error.message); }
+    });
+
+    const scenarioList = document.getElementById("scenarioList");
+    const scenarioOutput = document.getElementById("scenarioOutput");
+    async function loadScenarioLibrary() {
+      try {
+        const scenarios = await adminRequest("/admin/scenarios");
+        scenarioList.replaceChildren();
+        scenarios.forEach(scenario => {
+          const label = document.createElement("label");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = scenario.scenario_id;
+          checkbox.checked = true;
+          checkbox.setAttribute("aria-label", `Select ${scenario.scenario_id}`);
+          label.append(checkbox, document.createTextNode(` ${scenario.description}`));
+          scenarioList.appendChild(label);
+        });
+      } catch (error) { scenarioList.textContent = error.message; }
+    }
+    document.getElementById("loadScenariosButton").addEventListener("click", loadScenarioLibrary);
+    document.getElementById("runScenariosButton").addEventListener("click", async function () {
+      try {
+        const scenario_ids = Array.from(scenarioList.querySelectorAll('input[type="checkbox"]:checked'))
+          .map(input => input.value);
+        const report = await adminRequest("/admin/scenarios/run", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scenario_ids })
+        });
+        latestScenarioRunId = report.run_id;
+        printJson(scenarioOutput, report);
+      } catch (error) { printJson(scenarioOutput, error.message); }
+    });
+
+    function downloadJson(filename, value) {
+      const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+    document.getElementById("exportScenarioButton").addEventListener("click", async function () {
+      try {
+        if (!latestScenarioRunId) throw new Error("Run a scenario set first.");
+        const report = await adminRequest(`/admin/scenarios/runs/${encodeURIComponent(latestScenarioRunId)}/evidence`);
+        downloadJson(`bayora-scenario-${latestScenarioRunId}.json`, report);
+      } catch (error) { printJson(scenarioOutput, error.message); }
+    });
+
+    const incidentResults = document.getElementById("incidentResults");
+    const incidentDetail = document.getElementById("incidentDetail");
+    const incidentExport = document.getElementById("incidentExport");
+    function incidentQueryString() {
+      const params = new URLSearchParams();
+      const values = {
+        q: document.getElementById("incidentQuery").value.trim(),
+        role: document.getElementById("incidentRole").value,
+        decision: document.getElementById("incidentDecision").value,
+        action: document.getElementById("incidentAction").value.trim()
+      };
+      Object.entries(values).forEach(([key, value]) => { if (value) params.set(key, value); });
+      return params.toString();
+    }
+    async function searchIncidents() {
+      try {
+        const query = incidentQueryString();
+        const result = await adminRequest(`/admin/incidents${query ? `?${query}` : ""}`);
+        incidentResults.replaceChildren();
+        result.events.forEach(event => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "btn-secondary";
+          button.textContent = `${event.timestamp_utc} · ${event.decision} · ${event.role} · ${event.action} · ${event.resource}`;
+          button.addEventListener("click", async function () {
+            try {
+              const detail = await adminRequest(`/admin/incidents/${encodeURIComponent(event.event_id)}`);
+              printJson(incidentDetail, detail);
+            } catch (error) { printJson(incidentDetail, error.message); }
+          });
+          incidentResults.appendChild(button);
+        });
+        if (!result.events.length) incidentResults.textContent = "No matching incidents.";
+      } catch (error) { incidentResults.textContent = error.message; }
+    }
+    document.getElementById("searchIncidentsButton").addEventListener("click", searchIncidents);
+    document.getElementById("exportIncidentsButton").addEventListener("click", async function () {
+      try {
+        const query = incidentQueryString();
+        const report = await adminRequest(`/admin/incidents/export${query ? `?${query}` : ""}`);
+        downloadJson("bayora-incidents.json", report);
+        printJson(incidentExport, { exported_events: report.events.length });
+      } catch (error) { printJson(incidentExport, error.message); }
+    });
+
+    // Initial audit feed load
+    loadRecentEvents();
   </script>
 </body>
 </html>

@@ -7,11 +7,17 @@ HOST = os.environ.get("BAYORA_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BAYORA_PORT", "8000"))
 APP_ENV = os.environ.get("APP_ENV", "development")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = Path(os.environ.get("BAYORA_DATA_DIR", str(PROJECT_ROOT / "data")))
 AUDIT_DB_PATH = Path(
     os.environ.get("BAYORA_AUDIT_DB", str(PROJECT_ROOT / "data" / "bayora_audit.sqlite3"))
 )
 if not AUDIT_DB_PATH.is_absolute():
     AUDIT_DB_PATH = PROJECT_ROOT / AUDIT_DB_PATH
+SECURITY_CONFIG_PATH = Path(
+    os.environ.get("BAYORA_SECURITY_CONFIG", str(DATA_DIR / "security-config.json"))
+)
+if not SECURITY_CONFIG_PATH.is_absolute():
+    SECURITY_CONFIG_PATH = PROJECT_ROOT / SECURITY_CONFIG_PATH
 BLUE_SERVICE_URL = os.environ.get("BAYORA_BLUE_SERVICE_URL", "http://127.0.0.1:8001")
 BLUE_SERVICE_TOKEN = os.environ.get("BAYORA_BLUE_SERVICE_TOKEN", "")
 
@@ -43,6 +49,7 @@ _LOCAL_CONFIG_ENV = _read_local_env({
     "BAYORA_LLM_MODEL",
     "BAYORA_GATEWAY_RED_TOKEN",
     "BAYORA_GATEWAY_BLUE_TOKEN",
+    "BAYORA_GATEWAY_ADMIN_TOKEN",
 })
 OPENROUTER_API_KEY = os.environ.get(
     "BAYORA_OPENROUTER_API_KEY", _LOCAL_CONFIG_ENV.get("BAYORA_OPENROUTER_API_KEY", "")
@@ -56,5 +63,8 @@ GATEWAY_CALLER_TOKENS = {
     ),
     "blue": os.environ.get(
         "BAYORA_GATEWAY_BLUE_TOKEN", _LOCAL_CONFIG_ENV.get("BAYORA_GATEWAY_BLUE_TOKEN", "")
+    ),
+    "admin": os.environ.get(
+        "BAYORA_GATEWAY_ADMIN_TOKEN", _LOCAL_CONFIG_ENV.get("BAYORA_GATEWAY_ADMIN_TOKEN", "")
     ),
 }

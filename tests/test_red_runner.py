@@ -4,7 +4,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from red.runner import RunnerError, load_run, run_suite
+from red.runner import RunnerError, load_run, main, run_suite
 
 TEST_AUTH_TOKENS = {
     "red": "runner-red-test-token",
@@ -27,6 +27,8 @@ class GatewayStub:
         self.events = {}
         self.calls = []
         self.resource_auth_roles = []
+        self.policy_auth_roles = []
+        self.llm_auth_roles = []
         self.allowed_llm_preflight = allowed_llm_preflight
         self.missing_audit_for = missing_audit_for
         self.unknown_allowed_audit = unknown_allowed_audit
@@ -36,17 +38,18 @@ class GatewayStub:
         self.calls.append((request.method, request.url.host, request.url.path))
         path = request.url.path
         if path == "/policy/decide":
+            caller_role = self._authenticated_role(request)
+            self.policy_auth_roles.append(caller_role)
+            if caller_role is None:
+                return httpx.Response(401, json={"detail": "authentication required"})
             payload = json.loads(request.content)
+            evidence_payload = {**payload, "role": caller_role}
             if payload["action"] == "generate_client_response" and self.allowed_llm_preflight:
-                return self._event_response(payload, "ALLOW", 200, 0, "NOT_EXECUTED", "NOT_VERIFIED")
-            return self._event_response(payload, "DENY", 200, 0, "NOT_EXECUTED", "NOT_VERIFIED")
+                return self._event_response(evidence_payload, "ALLOW", 200, 0, "NOT_EXECUTED", "NOT_VERIFIED")
+            return self._event_response(evidence_payload, "DENY", 200, 0, "NOT_EXECUTED", "NOT_VERIFIED")
         if path == "/resource/read":
             payload = json.loads(request.content)
-            caller_token = request.headers.get("Authorization", "")
-            caller_role = {
-                f"Bearer {TEST_AUTH_TOKENS['red']}": "red",
-                f"Bearer {TEST_AUTH_TOKENS['blue']}": "blue",
-            }.get(caller_token)
+            caller_role = self._authenticated_role(request)
             self.resource_auth_roles.append(caller_role)
             if caller_role is None:
                 return httpx.Response(401, json={"detail": "authentication required"})
@@ -65,10 +68,17 @@ class GatewayStub:
             )
         if path == "/llm/generate":
             payload = json.loads(request.content)
+            caller_role = self._authenticated_role(request)
+            self.llm_auth_roles.append(caller_role)
+            if caller_role is None:
+                return httpx.Response(401, json={"detail": "authentication required"})
+            evidence_payload = {**payload, "role": caller_role}
             return self._event_response(
-                payload, "DENY", 403, 0, "NOT_EXECUTED", "NOT_VERIFIED", nested=True
+                evidence_payload, "DENY", 403, 0, "NOT_EXECUTED", "NOT_VERIFIED", nested=True
             )
         if path.startswith("/audit/events/"):
+            if self._authenticated_role(request) is None:
+                return httpx.Response(401, json={"detail": "authentication required"})
             event_id = path.rsplit("/", 1)[-1]
             if self.missing_audit_for in ("all", event_id) or event_id not in self.events:
                 return httpx.Response(404, json={"detail": "audit event not found"})
@@ -81,6 +91,14 @@ class GatewayStub:
                 })
             return httpx.Response(200, json=event)
         return httpx.Response(404)
+
+    @staticmethod
+    def _authenticated_role(request):
+        caller_token = request.headers.get("Authorization", "")
+        return {
+            f"Bearer {TEST_AUTH_TOKENS['red']}": "red",
+            f"Bearer {TEST_AUTH_TOKENS['blue']}": "blue",
+        }.get(caller_token)
 
     def _event_response(self, payload, decision, status, executed, outcome, verification,
                         *, body=None, nested=False):
@@ -131,6 +149,8 @@ def test_fixed_runner_scenarios_capture_inputs_http_and_audit(tmp_path):
     assert cases["denied-red-resource-read"]["input"]["role"] == "blue"
     assert cases["denied-red-resource-read"]["authenticated_role"] == "red"
     assert gateway.resource_auth_roles == ["blue", "red"]
+    assert gateway.policy_auth_roles == ["red", "red", "red"]
+    assert gateway.llm_auth_roles == ["red"]
     assert cases["invalid-test-identifier"]["input"]["resource"] == "test:not-approved"
     assert cases["policy-denied-llm-generation"]["result"] == "PASS"
     assert all(host == "127.0.0.1" for _, host, _ in gateway.calls)
@@ -211,3 +231,21 @@ def test_runner_rejects_non_loopback_gateway_without_requests(tmp_path):
 def test_load_run_rejects_path_like_identifier(tmp_path):
     with pytest.raises(RunnerError, match="invalid"):
         load_run("..", results_dir=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "summary,expected_exit",
+    [
+        ({"PASS": 4, "FAIL": 0, "INCONCLUSIVE": 0}, 0),
+        ({"PASS": 3, "FAIL": 1, "INCONCLUSIVE": 0}, 1),
+        ({"PASS": 3, "FAIL": 0, "INCONCLUSIVE": 1}, 1),
+    ],
+)
+def test_runner_cli_exit_code_reflects_evidence(monkeypatch, capsys, summary, expected_exit):
+    monkeypatch.setattr(
+        "red.runner.run_suite",
+        lambda *args, **kwargs: {"run_id": str(uuid4()), "summary": summary},
+    )
+
+    assert main(["run"]) == expected_exit
+    assert capsys.readouterr().out

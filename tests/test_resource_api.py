@@ -31,8 +31,8 @@ def make_client(tmp_path, transport=None):
     return TestClient(app)
 
 
-def audit_events(client):
-    return client.get("/audit/events").json()["events"]
+def audit_events(client, role="red"):
+    return client.get("/audit/events", headers=gateway_headers(role)).json()["events"]
 
 
 def test_allowed_gateway_read_executes_and_audits_accurate_outcome(tmp_path):
@@ -47,7 +47,9 @@ def test_allowed_gateway_read_executes_and_audits_accurate_outcome(tmp_path):
         assert body["observed_outcome"] == "SUCCEEDED"
         assert body["verification_result"] == "VERIFIED"
         assert body["content"].startswith("SYNTHETIC DUMMY CONFIDENTIAL TEST DATA:")
-        event = client.get(f"/audit/events/{body['event_id']}").json()
+        event = client.get(
+            f"/audit/events/{body['event_id']}", headers=gateway_headers("blue")
+        ).json()
         assert event["role"] == "blue"
         assert (event["decision"], event["operation_executed"], event["observed_outcome"],
                 event["verification_result"]) == ("ALLOW", 1, "SUCCEEDED", "VERIFIED")
@@ -104,6 +106,38 @@ def test_red_credential_overrides_spoofed_blue_body_role(tmp_path):
         assert event["decision"] == "DENY"
 
 
+def test_session_role_switch_is_denied_before_blue_call(tmp_path):
+    calls = []
+
+    def count_call(request):
+        calls.append(request)
+        return httpx.Response(200, json={"content": "unexpected"})
+
+    with make_client(tmp_path, httpx.MockTransport(count_call)) as client:
+        first = client.post(
+            "/policy/decide",
+            json={
+                "session_id": "resource-role-bound",
+                "role": "red",
+                "action": "run_approved_test",
+                "resource": "test:authorized_access",
+            },
+            headers=gateway_headers("red"),
+        )
+        assert first.status_code == 200
+        switched_payload = request(role="red")
+        switched_payload["session_id"] = "resource-role-bound"
+        response = client.post(
+            "/resource/read", json=switched_payload, headers=gateway_headers("blue")
+        )
+        assert response.status_code == 403
+        assert "session isolation violation" in response.json()["detail"]["reason"]
+        assert calls == []
+        event = audit_events(client, role="blue")[0]
+        assert event["decision"] == "DENY"
+        assert event["matched_rule_id"] == "session-isolation-violation"
+
+
 def test_direct_resource_call_with_role_claim_but_without_token_is_denied():
     with TestClient(create_blue_app("test-only-token")) as blue_client:
         response = blue_client.get(f"/internal/resources/{RESOURCE_ID}", headers={"X-Role": "blue"})
@@ -132,7 +166,7 @@ def test_resource_service_failure_fails_closed_and_audits_unknown_outcome(tmp_pa
         response = client.post("/resource/read", json=request(), headers=gateway_headers("blue"))
         assert response.status_code == 503
         assert "content" not in response.text
-        event = audit_events(client)[0]
+        event = audit_events(client, role="blue")[0]
         assert (event["decision"], event["operation_executed"], event["observed_outcome"],
                 event["verification_result"]) == ("ALLOW", None, "UNKNOWN", "NOT_VERIFIED")
 
@@ -144,7 +178,7 @@ def test_connect_failure_is_audited_as_not_executed(tmp_path):
     with make_client(tmp_path, httpx.MockTransport(fail_connect)) as client:
         response = client.post("/resource/read", json=request(), headers=gateway_headers("blue"))
         assert response.status_code == 503
-        event = audit_events(client)[0]
+        event = audit_events(client, role="blue")[0]
         assert (event["operation_executed"], event["observed_outcome"], event["verification_result"]) == (
             0, "NOT_EXECUTED", "NOT_VERIFIED"
         )
@@ -161,7 +195,7 @@ def test_unexpected_resource_content_is_withheld_and_verification_fails(tmp_path
         response = client.post("/resource/read", json=request(), headers=gateway_headers("blue"))
         assert response.status_code == 502
         assert "unexpected content" not in response.text
-        event = audit_events(client)[0]
+        event = audit_events(client, role="blue")[0]
         assert (event["operation_executed"], event["observed_outcome"], event["verification_result"]) == (
             1, "SUCCEEDED", "FAILED"
         )
