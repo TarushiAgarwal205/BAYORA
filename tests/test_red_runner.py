@@ -161,6 +161,40 @@ def test_fixed_runner_scenarios_capture_inputs_http_and_audit(tmp_path):
     assert "SYNTHETIC DUMMY CONFIDENTIAL TEST DATA: fake fixture" not in report_text
 
 
+def test_runner_cli_passes_custom_results_directory(monkeypatch, tmp_path, capsys):
+    observed = {}
+    report = {
+        "run_id": str(uuid4()),
+        "summary": {"PASS": 1, "FAIL": 0, "INCONCLUSIVE": 0},
+    }
+
+    def fake_run_suite(gateway_url, *, results_dir, selected_cases):
+        observed.update({
+            "gateway_url": gateway_url,
+            "results_dir": results_dir,
+            "selected_cases": selected_cases,
+        })
+        return report
+
+    monkeypatch.setattr("red.runner.run_suite", fake_run_suite)
+
+    assert main([
+        "run",
+        "--results-dir",
+        str(tmp_path),
+        "--case",
+        "invalid-test-identifier",
+    ]) == 0
+
+    assert observed == {
+        "gateway_url": "http://127.0.0.1:8000",
+        "results_dir": str(tmp_path),
+        "selected_cases": ["invalid-test-identifier"],
+    }
+    output = json.loads(capsys.readouterr().out)
+    assert output["results_file"] == str(tmp_path / f"{report['run_id']}.json")
+
+
 def test_missing_audit_evidence_is_inconclusive_not_pass(tmp_path):
     gateway = GatewayStub(missing_audit_for="all")
     report = run_mock_suite(gateway, tmp_path)

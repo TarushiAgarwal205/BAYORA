@@ -5,11 +5,12 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from llm.provider_policy import OPENROUTER_URL
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 API_KEY = os.environ.get("BAYORA_OPENROUTER_API_KEY", "")
 SERVICE_TOKEN = os.environ.get("BAYORA_LLM_SERVICE_TOKEN", "")
 MODEL = os.environ.get("BAYORA_LLM_MODEL", "openrouter/free")
+EGRESS_PROXY_URL = os.environ.get("BAYORA_LLM_EGRESS_PROXY", "")
 
 
 app = FastAPI(title="BAYORA LLM Service")
@@ -41,9 +42,15 @@ async def generate(
 
     if not API_KEY:
         raise HTTPException(status_code=503, detail="LLM provider is not configured")
+    if not EGRESS_PROXY_URL:
+        raise HTTPException(status_code=503, detail="LLM provider egress is not configured")
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(
+            proxy=EGRESS_PROXY_URL,
+            timeout=30.0,
+            follow_redirects=False,
+        ) as client:
             response = await client.post(
                 OPENROUTER_URL,
                 headers={

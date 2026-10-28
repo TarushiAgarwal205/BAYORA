@@ -25,6 +25,16 @@ def event(event_id="event-1", **overrides):
     return value
 
 
+def sqlite_backup(source_path, destination_path):
+    source = sqlite3.connect(source_path)
+    destination = sqlite3.connect(destination_path)
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+
+
 def _record_from_process(database_path, event_id):
     store = AuditStore(Path(database_path))
     store.record(event(event_id))
@@ -308,6 +318,148 @@ def test_checkpoint_tampering_fails_closed(tmp_path):
         store.record(event("after-checkpoint-tamper"))
 
 
+def test_valid_length_wrong_checkpoint_key_fails_closed_for_verification_and_writes(tmp_path):
+    database = tmp_path / "wrong-key.sqlite3"
+    checkpoint = tmp_path / "wrong-key.checkpoint.sqlite3"
+    correct_key = b"c" * 32
+    store = AuditStore(database, checkpoint, checkpoint_key=correct_key)
+    store.initialize()
+    store.record(event("anchored-event"))
+
+    wrong_key_store = AuditStore(database, checkpoint, checkpoint_key=b"w" * 32)
+
+    assert wrong_key_store.verify_integrity() == {
+        "valid": False,
+        "checked_entries": 1,
+        "checked_events": 1,
+        "reason": "audit checkpoint authentication failed",
+    }
+    with pytest.raises(sqlite3.DatabaseError, match="audit checkpoint authentication failed"):
+        wrong_key_store.record(event("must-not-write"))
+    assert wrong_key_store.get_event("must-not-write") is None
+
+
+def test_restoring_stale_audit_database_with_current_checkpoint_fails(tmp_path):
+    database = tmp_path / "stale-database.sqlite3"
+    checkpoint = tmp_path / "stale-database.checkpoint.sqlite3"
+    stale_backup = tmp_path / "stale-database-backup.sqlite3"
+    store = AuditStore(database, checkpoint, checkpoint_key=b"s" * 32)
+    store.initialize()
+    store.record(event("backup-head"))
+    sqlite_backup(database, stale_backup)
+
+    store.record(event("current-head"))
+    sqlite_backup(stale_backup, database)
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "audit checkpoint head does not match"
+
+
+def test_restoring_matching_audit_database_and_checkpoint_backup_verifies(tmp_path):
+    database = tmp_path / "matching.sqlite3"
+    checkpoint = tmp_path / "matching.checkpoint.sqlite3"
+    database_backup = tmp_path / "matching-backup.sqlite3"
+    checkpoint_backup = tmp_path / "matching-checkpoint-backup.sqlite3"
+    store = AuditStore(database, checkpoint, checkpoint_key=b"m" * 32)
+    store.initialize()
+    store.record(event("matching-backup-event"))
+    sqlite_backup(database, database_backup)
+    sqlite_backup(checkpoint, checkpoint_backup)
+
+    restored_database = tmp_path / "matching-restored.sqlite3"
+    restored_checkpoint = tmp_path / "matching-restored-checkpoint.sqlite3"
+    sqlite_backup(database_backup, restored_database)
+    sqlite_backup(checkpoint_backup, restored_checkpoint)
+
+    restored_store = AuditStore(
+        restored_database,
+        restored_checkpoint,
+        checkpoint_key=b"m" * 32,
+    )
+    assert restored_store.verify_integrity() == {
+        "valid": True,
+        "checked_entries": 1,
+        "checked_events": 1,
+        "reason": "integrity chain and external checkpoint verified",
+    }
+
+
+def test_restoring_coordinated_older_database_and_checkpoint_pair_is_undetected(tmp_path):
+    database = tmp_path / "rollback.sqlite3"
+    checkpoint = tmp_path / "rollback.checkpoint.sqlite3"
+    database_backup = tmp_path / "rollback-backup.sqlite3"
+    checkpoint_backup = tmp_path / "rollback-checkpoint-backup.sqlite3"
+    key = b"r" * 32
+    store = AuditStore(database, checkpoint, checkpoint_key=key)
+    store.initialize()
+    store.record(event("older-event"))
+    sqlite_backup(database, database_backup)
+    sqlite_backup(checkpoint, checkpoint_backup)
+    store.record(event("newer-event"))
+
+    # A coordinated older restore is valid but undetectable without an external monotonic anchor.
+    sqlite_backup(database_backup, database)
+    sqlite_backup(checkpoint_backup, checkpoint)
+
+    result = store.verify_integrity()
+    assert result["valid"] is True
+    assert result["reason"] == "integrity chain and external checkpoint verified"
+    assert store.get_event("older-event") is not None
+    assert store.get_event("newer-event") is None
+
+
+def test_empty_checkpoint_after_interrupted_initialization_cannot_create_baseline(tmp_path):
+    database = tmp_path / "empty-checkpoint.sqlite3"
+    checkpoint = tmp_path / "empty-checkpoint.checkpoint.sqlite3"
+    checkpoint.touch()
+    store = AuditStore(database, checkpoint, checkpoint_key=b"e" * 32)
+
+    with pytest.raises(
+        sqlite3.DatabaseError,
+        match="audit integrity verification failed during initialization",
+    ):
+        store.initialize()
+
+    assert checkpoint.stat().st_size == 0
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "audit checkpoint state is missing"
+
+
+def test_explicit_bootstrap_accepts_missing_but_rejects_present_invalid_checkpoint(tmp_path):
+    key = b"b" * 32
+    missing_database = tmp_path / "bootstrap-missing.sqlite3"
+    missing_checkpoint = tmp_path / "bootstrap-missing.checkpoint.sqlite3"
+    missing_store = AuditStore(
+        missing_database,
+        missing_checkpoint,
+        checkpoint_key=key,
+    )
+    missing_store.initialize(allow_checkpoint_bootstrap=True)
+    assert missing_checkpoint.is_file()
+    assert missing_store.verify_integrity()["valid"] is True
+
+    invalid_database = tmp_path / "bootstrap-invalid.sqlite3"
+    invalid_checkpoint = tmp_path / "bootstrap-invalid.checkpoint.sqlite3"
+    invalid_checkpoint.touch()
+    invalid_store = AuditStore(
+        invalid_database,
+        invalid_checkpoint,
+        checkpoint_key=key,
+    )
+    with pytest.raises(
+        sqlite3.DatabaseError,
+        match="audit integrity verification failed during initialization",
+    ):
+        invalid_store.initialize(allow_checkpoint_bootstrap=True)
+
+    assert invalid_checkpoint.stat().st_size == 0
+    result = invalid_store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "audit checkpoint state is missing"
+
+
 def test_missing_checkpoint_fails_closed_without_rebaselining(tmp_path):
     store = AuditStore(tmp_path / "missing-checkpoint.sqlite3")
     store.initialize()
@@ -320,6 +472,8 @@ def test_missing_checkpoint_fails_closed_without_rebaselining(tmp_path):
         "checked_events": 1,
         "reason": "audit checkpoint is missing",
     }
+    with pytest.raises(sqlite3.DatabaseError, match="audit checkpoint is missing"):
+        store.record(event("after-missing-checkpoint"))
     with pytest.raises(sqlite3.DatabaseError, match="refusing to establish a new baseline"):
         store.initialize()
 
@@ -339,6 +493,30 @@ def test_checkpoint_retry_is_idempotent(tmp_path):
         operation_id=state["operation_id"],
     )
     assert retried == state
+
+
+def test_checkpoint_verification_checks_identity_sequence_and_hash(tmp_path):
+    store = AuditStore(tmp_path / "checkpoint-fields.sqlite3")
+    store.initialize()
+    store.record(event("checkpoint-fields"))
+    state = store.checkpoint.read()
+
+    mismatches = (
+        {"database_id": "different-database"},
+        {"sequence": state["sequence"] + 1},
+        {"head_hash": "f" * 64},
+    )
+    for mismatch in mismatches:
+        expected = {
+            "database_id": state["database_id"],
+            "sequence": state["sequence"],
+            "head_hash": state["head_hash"],
+        }
+        expected.update(mismatch)
+        assert store.checkpoint.verify(**expected) == {
+            "valid": False,
+            "reason": "audit checkpoint head does not match",
+        }
 
 
 def test_lost_checkpoint_acknowledgement_is_confirmed_idempotently(tmp_path, monkeypatch):

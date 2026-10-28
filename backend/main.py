@@ -36,7 +36,7 @@ from backend.policy_admin import PolicyFileStore, PolicyManagementError
 from backend.prompt_inspection import inspect_prompt
 from backend.security_config import SecurityConfigError, SecurityConfigStore
 from blue.service import RESOURCE_CLASSIFICATION, RESOURCE_ID, RESOURCE_SHA256
-from red.runner import TEST_CASES, RunnerError, load_run, run_suite
+from red.runner import TEST_CASES, RunnerError, load_run_bytes, run_suite
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -905,7 +905,7 @@ def create_app(
         if not hmac.compare_digest(actual_hash, expected_hash):
             raise HTTPException(status_code=503, detail="scenario evidence integrity check failed")
         try:
-            report = load_run(normalized, application.state.scenario_results_dir)
+            report = load_run_bytes(normalized, raw_report)
         except RunnerError as error:
             raise HTTPException(status_code=503, detail="scenario evidence is invalid") from error
         return Response(
@@ -966,7 +966,7 @@ def create_app(
                 raw = report_path.read_bytes()
                 expected_hash = details.get("evidence_sha256")
                 if expected_hash and hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_hash):
-                    evidence = load_run(run_id, application.state.scenario_results_dir)
+                    evidence = load_run_bytes(run_id, raw)
                 else:
                     evidence = {"available": False, "reason": "scenario evidence integrity check failed"}
             except (OSError, RunnerError):

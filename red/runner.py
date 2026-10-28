@@ -411,13 +411,26 @@ def load_run(run_id, results_dir=None):
     directory = Path(results_dir) if results_dir is not None else RESULTS_DIR
     result_path = directory / f"{normalized_id}.json"
     try:
-        report = json.loads(result_path.read_text(encoding="utf-8"))
+        raw_report = result_path.read_bytes()
     except FileNotFoundError as error:
         raise RunnerError("run result not found") from error
-    except (OSError, json.JSONDecodeError) as error:
+    except OSError as error:
+        raise RunnerError("run result could not be read") from error
+    return load_run_bytes(normalized_id, raw_report)
+
+
+def load_run_bytes(run_id, raw_report):
+    try:
+        normalized_id = str(UUID(run_id))
+    except (ValueError, TypeError, AttributeError) as error:
+        raise RunnerError("run ID is invalid") from error
+
+    try:
+        report = json.loads(raw_report.decode("utf-8"))
+    except (AttributeError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RunnerError("run result could not be read") from error
 
-    if report.get("run_id") != normalized_id:
+    if not isinstance(report, dict) or report.get("run_id") != normalized_id:
         raise RunnerError("run result is invalid")
     return report
 
@@ -439,6 +452,7 @@ def main(argv=None):
         choices=[case["case_id"] for case in TEST_CASES],
         help="run a specific test case; repeat this option to select multiple cases",
     )
+    run_parser.add_argument("--results-dir")
 
     show_parser = commands.add_parser("show", help="retrieve a saved run report")
     show_parser.add_argument("run_id")
@@ -448,11 +462,15 @@ def main(argv=None):
         if args.command == "run":
             report = run_suite(
                 args.gateway_url,
+                results_dir=args.results_dir,
                 selected_cases=args.selected_cases,
+            )
+            result_directory = (
+                Path(args.results_dir) if args.results_dir is not None else RESULTS_DIR
             )
             output = {
                 "run_id": report["run_id"],
-                "results_file": str(RESULTS_DIR / f"{report['run_id']}.json"),
+                "results_file": str(result_directory / f"{report['run_id']}.json"),
                 "summary": report["summary"],
             }
         else:

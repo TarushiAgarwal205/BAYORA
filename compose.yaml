@@ -28,7 +28,7 @@ services:
       BAYORA_BLUE_SERVICE_URL: "http://blue:8001"
       BAYORA_BLUE_SERVICE_TOKEN: ${BAYORA_BLUE_SERVICE_TOKEN:?Set BAYORA_BLUE_SERVICE_TOKEN in .env}
       BAYORA_GATEWAY_RED_TOKEN: ${BAYORA_GATEWAY_RED_TOKEN:-}
-      BAYORA_GATEWAY_BLUE_TOKEN: ${BAYORA_GATEWAY_BLUE_TOKEN:-}
+      BAYORA_GATEWAY_BLUE_TOKEN: ${BAYORA_GATEWAY_BLUE_TOKEN:?Set BAYORA_GATEWAY_BLUE_TOKEN in .env}
       BAYORA_GATEWAY_ADMIN_TOKEN: ${BAYORA_GATEWAY_ADMIN_TOKEN:-}
       BAYORA_AUDIT_DB: /app/data/bayora_audit.sqlite3
       BAYORA_AUDIT_CHECKPOINT_PATH: /app/audit-checkpoint/checkpoint.sqlite3
@@ -53,6 +53,7 @@ services:
       - red-gateway
       - blue-gateway
       - llm-gateway
+      - gateway-host
     healthcheck:
       test:
         - CMD
@@ -129,11 +130,15 @@ services:
       BAYORA_OPENROUTER_API_KEY: ${BAYORA_OPENROUTER_API_KEY:-}
       BAYORA_LLM_MODEL: ${BAYORA_LLM_MODEL:-openrouter/free}
       BAYORA_LLM_SERVICE_TOKEN: ${BAYORA_LLM_SERVICE_TOKEN:?Set BAYORA_LLM_SERVICE_TOKEN in .env}
+      BAYORA_LLM_EGRESS_PROXY: http://egress-proxy:8080
     expose:
       - "8002"
     networks:
       - llm-gateway
-      - llm-egress
+      - llm-proxy
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -144,8 +149,43 @@ services:
       timeout: 5s
       retries: 5
 
-  red:
+  egress-proxy:
     build: .
+    command:
+      - python
+      - -m
+      - llm.egress_proxy
+    user: "10001:10001"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    cpus: 0.25
+    mem_limit: 128m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m,mode=1777
+    expose:
+      - "8080"
+    networks:
+      - llm-egress
+      - llm-proxy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket; s=socket.create_connection(('127.0.0.1',8080),timeout=2); s.close()"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  red:
+    build:
+      context: .
+      target: red-runner
     command:
       - python
       - -m
@@ -159,6 +199,8 @@ services:
       - invalid-test-identifier
       - --case
       - policy-denied-llm-generation
+      - --results-dir
+      - /tmp/red-runs
     user: "10001:10001"
     init: true
     read_only: true
@@ -173,8 +215,6 @@ services:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
     environment:
       BAYORA_GATEWAY_RED_TOKEN: ${BAYORA_GATEWAY_RED_TOKEN:?Set BAYORA_GATEWAY_RED_TOKEN in .env}
-    volumes:
-      - ./reports/red-runs:/app/reports/red-runs
     depends_on:
       gateway:
         condition: service_healthy
@@ -191,7 +231,13 @@ networks:
   llm-gateway:
     internal: true
 
+  llm-proxy:
+    internal: true
+
   llm-egress:
+    driver: bridge
+
+  gateway-host:
     driver: bridge
 
 volumes:

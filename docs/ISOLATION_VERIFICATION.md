@@ -89,6 +89,7 @@ counted as a pass.
 | Gateway | 1 CPU | 512 MiB | 128 | None configured |
 | Blue | 0.5 CPU | 256 MiB | 64 | None configured |
 | LLM | 0.5 CPU | 256 MiB | 64 | None configured |
+| Egress proxy | 0.25 CPU | 128 MiB | 32 | None configured |
 | Red | 0.5 CPU | 256 MiB | 64 | None configured |
 
 These are Compose service-level `cpus`, `mem_limit`, and `pids_limit` values.
@@ -116,7 +117,8 @@ Static settings checked for each service:
 - User `10001:10001`, not privileged, all capabilities dropped, and no
   capability additions.
 - Read-only root filesystem and `no-new-privileges:true`.
-- `/tmp` tmpfs with `noexec`, `nosuid`, and a 16 MiB configured size.
+- `/tmp` tmpfs with `noexec` and `nosuid`; the configured size is 8 MiB for
+  `egress-proxy` and 16 MiB for the other applicable services.
 - Service PID limit and CPU/memory constraints above.
 - Whether a named seccomp profile appears in `security_opt`.
 
@@ -135,13 +137,18 @@ because the container root filesystem is read-only.
 Static Compose expectations:
 
 - Red is attached only to `red-gateway`; Blue only to `blue-gateway`.
-- Gateway joins those internal networks and `llm-gateway`.
-- LLM joins `llm-gateway` and `llm-egress`.
+- Gateway joins the internal `red-gateway`, `blue-gateway`, and
+  `llm-gateway` networks, plus the separate non-internal `gateway-host`
+  bridge. This declared membership does not prove isolation or restrict
+  Gateway outbound access.
+- LLM joins `llm-gateway` and the internal `llm-proxy` network; the
+  `egress-proxy` service joins `llm-proxy` and `llm-egress`.
 - The Gateway is the only service with a host port, bound to
   `127.0.0.1:8000`; Blue, LLM, and Red have no published ports.
-- The `llm-egress` network is an ordinary bridge, not an internal network or
-  provider-destination allowlist. Therefore, provider-only egress is **not
-  configured or demonstrated**.
+- The `llm-egress` network is an ordinary bridge used only by the
+  `egress-proxy`. The proxy allows HTTPS CONNECT only to the configured
+  OpenRouter hostname on port 443; this Compose/code policy is not runtime
+  proof and does not constrain a compromised proxy container or Docker host.
 
 Runtime network membership, non-Compose peers, and published bindings are
 inspected from existing containers/networks. With `--probe`, local health requests check host-to-Gateway,
@@ -149,12 +156,14 @@ Gateway-to-Blue, Gateway-to-LLM, and Blue-to-Gateway. A running Red container is
 required to check Red-to-Blue; otherwise this is UNVERIFIED. Network membership
 alone does not prove reachability or denial.
 
-To establish LLM provider-only egress, implement an explicit egress boundary
-(for example a controlled proxy/firewall allowlist), then verify the approved
-destination and blocked destinations in an isolated runtime using synthetic
-requests and no credentials. Do not claim provider-only restriction based on
-the current bridge network. This verification does not probe arbitrary
-external hosts.
+The repository now declares a default-deny egress proxy boundary. Verify the
+resolved Compose topology and running attachments, confirm LLM direct outbound
+connections fail, and send a synthetic denied CONNECT request such as
+`example.invalid:443` through the proxy. These checks require no credentials or
+external calls. Provider reachability still requires an explicitly approved
+deployment test; use a non-production provider credential and a synthetic
+prompt, and account for provider traffic/cost. Do not claim provider-only
+runtime enforcement based on static Compose or mocked tests.
 
 ## Results record
 
@@ -171,17 +180,17 @@ Record each result with category and actual evidence:
 | Gateway-to-Blue/LLM | Health succeeds | Fill from local probes | Runtime | |
 | Host publication | Only loopback Gateway port | Fill from inspected port bindings | Runtime | |
 | Unlisted network peers | No unknown containers attached | Fill from Docker network inspection | Runtime | |
-| LLM egress | Approved destinations only | Current bridge has no provider allowlist | Static/runtime | |
+| LLM egress | Approved destinations only | Earlier audit snapshot: ordinary bridge had no provider allowlist; current runtime **NOT VERIFIED** | Static/runtime | |
 | Contention | Limits respected without host instability | Only with isolated bounded load test | Runtime | |
 
-## Current inspection evidence
+## Historical runtime inspection (2026-10-28; source HEAD `98ef19c`)
 
 The verification artifact was added after the following read-only inspection.
 The source HEAD was `98ef19c3fbfb3e386f88fd4d03535e56eb24f946`; the working tree
 also had pre-existing local changes in `compose.yaml` (quoting/spacing only)
 and a tracked `.pytest-tmp` fixture. Neither was edited by this verification
-work. The runtime snapshot is not evidence for a future commit or redeployed
-container set:
+work. The runtime snapshot is not evidence for the current worktree or a later
+redeployed container set:
 
 - Repository commit inspected: `98ef19c3fbfb3e386f88fd4d03535e56eb24f946`.
 - Host: Windows; Docker Engine `29.9.1`; Compose `5.6.0`.
@@ -205,13 +214,12 @@ container set:
   reads matched Gateway `100000 100000` CPU quota, `536870912` byte memory,
   and 128 PIDs; Blue and LLM matched `50000 100000`, `268435456` bytes, and
   64 PIDs.
-- Active Gateway network membership included `bayora_gateway-host`, while the
-  current working-tree Compose file does not declare that network or attach
-  Gateway to it. The running containers therefore do not match the current
-  working-tree network configuration; this is a runtime mismatch, not a reason
-  to restart the stack during an active session. Runtime inspection showed only
-  `127.0.0.1:8000` published for Gateway and no published ports for Blue/LLM.
-  The LLM container is attached to the ordinary `bayora_llm-egress` bridge.
+- At that inspection, Gateway was attached to `bayora_gateway-host`, which was
+  not declared in the then-inspected Compose source. Runtime inspection showed
+  only `127.0.0.1:8000` published for Gateway and no published ports for
+  Blue/LLM. The LLM container was attached to the ordinary
+  `bayora_llm-egress` bridge. These are historical attachments and do not
+  establish the current runtime topology.
 - Docker network inspection also found a running, non-Compose container named
   `bayora-port-test` attached to `bayora_blue-gateway`. Its image is `nginx`,
   it has no Docker Compose ownership labels, and its published-port list is
@@ -219,10 +227,10 @@ container set:
   as an unexpected peer and does not send it traffic. The other inspected
   `port-test` container was on Docker's default `bridge`, not a BAYORA service
   network.
-- Optional health probes returned 200 for host-to-Gateway, Gateway-to-Blue,
-  Gateway-to-LLM, and Blue-to-Gateway. Red-to-Blue direct reachability remains
-  UNVERIFIED because no Red container was running; the verifier did not start
-  one.
+- Optional health probes at that inspection returned 200 for host-to-Gateway,
+  Gateway-to-Blue, Gateway-to-LLM, and Blue-to-Gateway. Red-to-Blue direct
+  reachability remained UNVERIFIED because no Red container was running; the
+  verifier did not start one.
 - **FAIL:** The LLM egress bridge is not a provider-destination allowlist.
   General external destinations are not restricted by this Compose config.
 - **FAIL:** The active Gateway's extra `bayora_gateway-host` attachment differs
@@ -313,3 +321,153 @@ behavior. Verification then requires a controlled isolated test showing an
 approved synthetic destination succeeds and a prohibited synthetic destination
 is blocked, with policy/log evidence and no credentials or sensitive prompts.
 Until that evidence exists, provider-only egress remains **unverified**.
+
+## Egress proxy implementation update (2026-10-28; historical snapshot)
+
+The Compose source and LLM client now implement the following default-deny
+boundary:
+
+- `llm` is attached only to internal `llm-gateway` and `llm-proxy` networks.
+- `egress-proxy` is the only Compose service attached to the ordinary
+  `llm-egress` bridge. It shares internal `llm-proxy` with the LLM service.
+- The LLM client requires `BAYORA_LLM_EGRESS_PROXY`; if it is unset, provider
+  generation fails closed. Compose sets it to `http://egress-proxy:8080`.
+- The project-built proxy accepts CONNECT only for `openrouter.ai:443`, resolves
+  the provider name itself, rejects private, reserved, or mixed public/private
+  DNS answers, and requires a bounded TLS ClientHello with exact
+  `openrouter.ai` SNI before forwarding TLS bytes. It does not terminate TLS or
+  inspect encrypted HTTP paths/authority; SNI is not provider authentication.
+  The provider endpoint remains the existing OpenRouter URL; no additional
+  provider hosts or third-party proxy images were added.
+- Gateway-to-LLM connectivity remains on the separate internal
+  `llm-gateway` network. The proxy has no provider API key or service token.
+
+Focused mocked/unit tests passed 54 tests and the full suite passed 150 tests
+(each with one existing Starlette/httpx deprecation warning). They establish
+allowlist behavior and declared topology only; they do not establish Docker
+route enforcement, a successful provider connection, or the absence of
+host-managed egress policy. Docker/Compose CLI tools were unavailable in the
+implementation environment, so Compose parsing, image build, and runtime
+positive/negative egress checks remain unverified. The known Gateway host
+publication failure also remains unresolved; this repository change did not
+alter its port configuration. The unexplained `bayora-port-test` container was
+not modified.
+
+For deployment preparation, configure the existing required secrets and
+optionally `BAYORA_OPENROUTER_API_KEY` in the ignored `.env`, then run:
+
+```powershell
+docker compose config --quiet
+docker compose build
+docker compose up -d gateway blue llm egress-proxy
+docker compose ps
+docker compose logs --tail=100 gateway blue llm egress-proxy
+venv\Scripts\python.exe -m scripts.verify_isolation --probe
+```
+
+The local verifier must report the expected network attachments and healthy
+required routes. For a no-external-call negative test, issue
+`CONNECT example.invalid:443` from the LLM network to `egress-proxy:8080` and
+expect HTTP 403. Direct-egress denial is a separate runtime check and requires
+the verifier's owner-controlled, positively reachable public listener baseline.
+Provider-positive testing is a separate deployment-owner action: approve a
+non-production key and synthetic request before testing OpenRouter, and never
+include credentials or sensitive prompts in diagnostics.
+
+The no-external-call negative checks can be run after deployment with:
+
+```powershell
+docker compose exec -T llm python -c "import socket; s=socket.create_connection(('egress-proxy',8080),timeout=2); s.sendall(b'CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\n\r\n'); print(s.recv(128).split(b'\r\n',1)[0].decode()); s.close()"
+```
+
+Expect HTTP 403 from the proxy. Do not treat failure to connect to a reserved
+TEST-NET or arbitrary unreachable address as proof that direct egress is
+blocked. For direct-egress verification, use the owner-controlled reachable
+public listener and the verifier's positive-baseline procedure above. These
+denial checks do not prove provider reachability. Confirm Gateway `/health`, Dashboard `/dashboard/`,
+Blue/LLM health, and required Gateway-to-Blue/LLM routes with `--probe`. The
+known Windows Gateway published-port failure must be resolved independently.
+
+## Runtime follow-up (2026-10-28, repository HEAD `193cbae`; historical snapshot)
+
+This read-only inspection used Docker Desktop's local Engine API because the
+Docker and Docker Compose CLIs were unavailable. The Engine reported Docker
+29.9.1. No service, firewall rule, or existing network was restarted or
+changed. The only temporary container was a controlled Red-image probe and it
+was removed after the check.
+
+- **Gateway internal service:** Docker reported `bayora-gateway-1` running and
+  healthy. Bounded checks from inside that container returned success for
+  `http://127.0.0.1:8000/health` and `/dashboard/` (HTTP 200 checks).
+- **Gateway host publication — release blocker:** `HostConfig.PortBindings`
+  requests `127.0.0.1:8000`, but Docker's effective `NetworkSettings.Ports`
+  was `8000/tcp: []`; the container list had no host binding, and Windows had
+  no listener on port 8000. Direct host TCP, `/health`, and `/dashboard/`
+  requests to `127.0.0.1:8000` were refused. WinHTTP reports direct access
+  without a proxy. This narrows the failure to an inactive Docker Desktop port
+  publication. Whether the cause is a stale container or an Engine/host
+  forwarding fault remains undetermined: the Compose CLI was unavailable, so
+  the effective current configuration could not be compared to the container
+  config hash. No restart or firewall change was attempted.
+- **Red-to-Blue — runtime probe passed for the configured Red network:** the
+  actual `bayora-red-1` container was exited and its Docker-reported sole
+  attachment was `bayora_red-gateway`. Blue was attached only to
+  `bayora_blue-gateway`; Gateway bridged both. A temporary probe from the exact
+  Red image, using UID/GID `10001:10001`, read-only rootfs, all capabilities
+  dropped, `no-new-privileges`, and only `bayora_red-gateway`, received
+  `ENETUNREACH` or `EHOSTUNREACH` connecting directly to Blue's private
+  `172.21.0.2:8001`. Its request to `http://gateway:8000/health` returned 200.
+  The probe exited successfully and was removed. This verifies the Red image
+  on the recorded Red network path; the normal Red runner process itself was
+  stopped during the check.
+- **Unexpected Blue-network peer:** Docker still reports
+  `bayora-port-test` (image `nginx`, no Compose service/project labels) on
+  `bayora_blue-gateway`. Its owner and purpose remain unknown, so it was left
+  untouched. Host configuration lists a requested `127.0.0.1:18001` mapping,
+  while the effective port list has no host binding.
+- **LLM provider egress — unresolved:** Docker reports `bayora_llm-egress` as
+  a non-internal bridge with `bayora-llm-1` attached. The LLM also uses the
+  internal `bayora_llm-gateway` network. No provider or prohibited external
+  destination was contacted. Provider-only egress and actual OpenRouter
+  connectivity remain unverified. A default-deny, domain-restricted egress
+  proxy or equivalent host policy needs an identified, reviewed enforcement
+  point and positive/negative validation in an isolated deployment before it
+  can replace the current route safely.
+
+At that time, the focused network/API tests passed **34 tests** with one Starlette
+deprecation warning. The full suite passed **133 tests** with the same warning.
+`docker compose config --quiet` could not run because the Docker Compose CLI is
+unavailable; the Python environment also has no YAML parser. These test
+results do not substitute for Compose parsing or the unperformed LLM egress
+tests.
+
+## Latest recorded independent audit (2026-10-28; historical runtime snapshot)
+
+That audit reports **157 tests passed** and `docker compose config
+--quiet` passed. These results validate the test suite and Compose syntax at
+that audit point; neither proves runtime isolation. The audit found:
+
+- **Gateway host access — BLOCKED:** Windows access on port 8000 still fails.
+- **LLM egress enforcement — NOT VERIFIED:** the running LLM is attached to
+  `bayora_llm-egress`, and `bayora-egress-proxy-1` is absent. Direct-egress
+  denial, proxy destination rejection in the running deployment, and approved
+  provider connectivity were not established. No provider request is claimed.
+- **Red-runner isolation — NOT VERIFIED:** the Red container is stopped, so
+  normal Red-to-Gateway access and direct Red-to-Blue denial were not tested.
+  The earlier probe was a historical result and does not establish the current
+  normal Red runner boundary.
+- **Blue and `bayora-port-test`:** the port-test owner's identity and
+  authorization remain unknown. Leave it untouched until its owner and
+  authorization are established; runtime Blue isolation is not established by
+  the passing tests or Compose validation.
+
+No fresher runtime evidence is recorded here. Gateway host access, current
+service health and network attachments, LLM proxy enforcement, and normal
+Red-runner routes therefore remain **NOT VERIFIED** for the current runtime.
+The current owner and authorization status for `bayora-port-test` have not
+been re-established; leave it untouched until they are.
+
+The previous statement that Docker/Compose tools were unavailable and Compose
+validation could not run applies only to the historical snapshot above; the
+latest audit reports Compose configuration validation passed. Image build
+status was not reported.

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from backend import main as gateway_main
 from backend.main import create_app
 
 
@@ -256,6 +257,12 @@ def test_scenario_library_runs_fixed_cases_audits_and_exports_integrity_linked_e
         detail = client.get(f"/admin/incidents/{event['event_id']}", headers=headers())
         assert detail.status_code == 200
         assert detail.json()["scenario_evidence"]["run_id"] == run_id
+        assert client.get(
+            f"/admin/scenarios/runs/{run_id}/evidence"
+        ).status_code == 401
+        assert client.get(
+            f"/admin/scenarios/runs/{run_id}/evidence", headers=headers("red")
+        ).status_code == 403
         exported = client.get(f"/admin/scenarios/runs/{run_id}/evidence", headers=headers())
         assert exported.status_code == 200
         assert exported.headers["content-type"].startswith("application/json")
@@ -263,6 +270,47 @@ def test_scenario_library_runs_fixed_cases_audits_and_exports_integrity_linked_e
         path = app.state.scenario_results_dir / f"{run_id}.json"
         path.write_text("tampered", encoding="utf-8")
         assert client.get(f"/admin/scenarios/runs/{run_id}/evidence", headers=headers()).status_code == 503
+
+
+def test_scenario_evidence_uses_the_same_bytes_for_hashing_and_loading(
+    app_factory, monkeypatch
+):
+    app, _ = app_factory(scenario_runner=_scenario_runner)
+    with TestClient(app) as client:
+        run = client.post("/admin/scenarios/run", json={
+            "scenario_ids": ["policy-denied-llm-generation"],
+        }, headers=headers())
+        assert run.status_code == 200
+        run_id = run.json()["run_id"]
+        original_bytes = (app.state.scenario_results_dir / f"{run_id}.json").read_bytes()
+        event = next(
+            item for item in client.get("/audit/events", headers=headers()).json()["events"]
+            if item["action"] == "scenario.run"
+        )
+        report_path = app.state.scenario_results_dir / f"{run_id}.json"
+        original_load_run_bytes = gateway_main.load_run_bytes
+
+        def replace_artifact_after_hash(run_id, raw_report):
+            artifact = json.loads(report_path.read_text(encoding="utf-8"))
+            artifact["gateway"] = "http://attacker.invalid"
+            report_path.write_text(json.dumps(artifact), encoding="utf-8")
+            return original_load_run_bytes(run_id, raw_report)
+
+        monkeypatch.setattr(gateway_main, "load_run_bytes", replace_artifact_after_hash)
+
+        exported = client.get(
+            f"/admin/scenarios/runs/{run_id}/evidence", headers=headers()
+        )
+        assert exported.status_code == 200
+        assert exported.json()["gateway"] == "http://127.0.0.1:8000"
+
+        report_path.write_bytes(original_bytes)
+        monkeypatch.setattr(gateway_main, "load_run_bytes", replace_artifact_after_hash)
+        detail = client.get(
+            f"/admin/incidents/{event['event_id']}", headers=headers()
+        )
+        assert detail.status_code == 200
+        assert detail.json()["scenario_evidence"]["gateway"] == "http://127.0.0.1:8000"
 
 
 def test_incident_workspace_filters_details_exports_and_requires_admin(app_factory):

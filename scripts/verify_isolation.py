@@ -14,30 +14,36 @@ SERVICES = {
     "gateway": {"cpus": 1.0, "memory": 536870912, "pids": 128},
     "blue": {"cpus": 0.5, "memory": 268435456, "pids": 64},
     "llm": {"cpus": 0.5, "memory": 268435456, "pids": 64},
+    "egress-proxy": {"cpus": 0.25, "memory": 134217728, "pids": 32},
     "red": {"cpus": 0.5, "memory": 268435456, "pids": 64},
 }
 SERVICE_NETWORKS = {
-    "gateway": {"red-gateway", "blue-gateway", "llm-gateway"},
+    "gateway": {"red-gateway", "blue-gateway", "llm-gateway", "gateway-host"},
     "blue": {"blue-gateway"},
-    "llm": {"llm-gateway", "llm-egress"},
+    "llm": {"llm-gateway", "llm-proxy"},
+    "egress-proxy": {"llm-proxy", "llm-egress"},
     "red": {"red-gateway"},
 }
 NETWORK_SERVICES = {
     "red-gateway": {"gateway", "red"},
     "blue-gateway": {"gateway", "blue"},
     "llm-gateway": {"gateway", "llm"},
-    "llm-egress": {"llm"},
+    "llm-proxy": {"llm", "egress-proxy"},
+    "llm-egress": {"egress-proxy"},
+    "gateway-host": {"gateway"},
 }
 EXPECTED_CAP_DROP = ["ALL"]
 INSPECT_TEMPLATE = (
     "{{.Name}}|{{.State.Running}}|"
     "{{index .Config.Labels \"com.docker.compose.service\"}}|"
     "{{index .Config.Labels \"com.docker.compose.project\"}}|"
+    "{{index .Config.Labels \"com.docker.compose.oneoff\"}}|"
     "{{.Config.User}}|{{.HostConfig.Privileged}}|"
     "{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|"
     "{{json .HostConfig.CapAdd}}|{{json .HostConfig.SecurityOpt}}|"
     "{{.HostConfig.PidsLimit}}|{{.HostConfig.NanoCpus}}|"
     "{{.HostConfig.Memory}}|"
+    "{{.HostConfig.PidMode}}|{{.HostConfig.IpcMode}}|{{.HostConfig.UTSMode}}|"
     "{{range $name, $network := .NetworkSettings.Networks}}{{$name}},{{end}}|"
     "{{range $name, $network := .NetworkSettings.Networks}}{{$name}}={{$network.IPAddress}},{{end}}|"
     "{{json .NetworkSettings.Ports}}|"
@@ -51,6 +57,15 @@ import socket
 import sys
 import urllib.error
 import urllib.request
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    NoRedirect,
+)
 
 def read(path):
     try:
@@ -87,7 +102,7 @@ result = {
 }
 for url in sys.argv[1:]:
     try:
-        with urllib.request.urlopen(url, timeout=2) as response:
+        with opener.open(url, timeout=2) as response:
             result["http"][url] = {"status": response.status}
     except urllib.error.HTTPError as error:
         result["http"][url] = {"status": error.code}
@@ -108,12 +123,44 @@ for url in sys.argv[1:]:
         result["http"][url] = {"error": category}
 print(json.dumps(result, sort_keys=True))
 """
-HOST_HEALTH_CODE = (
-    "import urllib.request; "
-    "response = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2); "
-    "raise SystemExit(0 if response.status == 200 and "
-    "b'healthy' in response.read() else 1)"
+HOST_HEALTH_CODE = r"""
+import urllib.request
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    NoRedirect,
 )
+response = opener.open("http://127.0.0.1:8000/health", timeout=2)
+raise SystemExit(
+    0 if response.status == 200 and b"healthy" in response.read() else 1
+)
+"""
+SOCKET_CONNECT_PROBE_CODE = r"""
+import errno
+import json
+import socket
+import sys
+
+sock = socket.socket(socket.AF_INET6 if ':' in sys.argv[1] else socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(3)
+code = sock.connect_ex((sys.argv[1], int(sys.argv[2])))
+sock.close()
+if code == 0:
+    result = {"connected": True}
+else:
+    errors = {
+        errno.ENETUNREACH: "network_unreachable",
+        errno.EHOSTUNREACH: "host_unreachable",
+        errno.ETIMEDOUT: "timeout",
+        errno.ECONNREFUSED: "connection_refused",
+    }
+    result = {"connected": False, "error": errors.get(code, "socket_error")}
+print(json.dumps(result, sort_keys=True))
+"""
 
 COUNTS = {"PASS": 0, "FAIL": 0, "UNVERIFIED": 0, "INFO": 0}
 
@@ -190,13 +237,33 @@ def check_static(config):
             (entry for entry in tmpfs_options if isinstance(entry, str) and entry.startswith("/tmp:")),
             "",
         )
-        tmpfs_ok = all(option in tmpfs_entry for option in ("noexec", "nosuid", "size=16m"))
+        expected_tmpfs_size = "8m" if name == "egress-proxy" else "16m"
+        tmpfs_settings = set(tmpfs_entry.partition(":")[2].split(","))
+        configured_sizes = {
+            option for option in tmpfs_settings if option.startswith("size=")
+        }
+        tmpfs_ok = (
+            {"noexec", "nosuid"} <= tmpfs_settings
+            and not {"exec", "suid"} & tmpfs_settings
+            and configured_sizes == {f"size={expected_tmpfs_size}"}
+        )
         emit(
             "INFO" if tmpfs_ok else "FAIL",
             f"{name} declared /tmp tmpfs",
-            "Compose declares size=16m,noexec,nosuid; effective mount not verified"
-            if tmpfs_ok else "Compose must declare /tmp tmpfs with size=16m,noexec,nosuid",
+            f"Compose declares size={expected_tmpfs_size},noexec,nosuid; effective mount not verified"
+            if tmpfs_ok else f"Compose must declare /tmp tmpfs with size={expected_tmpfs_size},noexec,nosuid",
         )
+
+        for namespace, key in (("PID", "pid"), ("IPC", "ipc"), ("UTS", "uts")):
+            mode = service.get(key) or ""
+            unsafe = _namespace_mode_is_shared(mode)
+            emit(
+                "FAIL" if unsafe else "INFO",
+                f"{name} declared {namespace} namespace",
+                f"Compose requests shared namespace mode {mode!r}"
+                if unsafe else
+                "Compose does not request host/container namespace sharing; runtime mode is checked separately",
+            )
 
         deploy_resources = (service.get("deploy") or {}).get("resources") or {}
         reservations = deploy_resources.get("reservations")
@@ -225,7 +292,7 @@ def check_static(config):
             f"expected Compose networks {','.join(sorted(expected_networks))}; found {','.join(sorted(actual_networks)) or 'none'}",
         )
 
-    for name in ("red-gateway", "blue-gateway", "llm-gateway"):
+    for name in ("red-gateway", "blue-gateway", "llm-gateway", "llm-proxy"):
         internal = networks.get(name, {}).get("internal") is True
         emit(
             "INFO" if internal else "FAIL",
@@ -234,11 +301,33 @@ def check_static(config):
             if internal else "Compose must declare internal=true",
         )
 
-    egress = networks.get("llm-egress", {})
-    if egress and egress.get("internal") is not True:
-        emit("FAIL", "LLM provider-only egress", "Compose declares an ordinary bridge with no destination allowlist; add and runtime-test an explicit egress boundary")
-    else:
-        emit("UNVERIFIED", "LLM provider-only egress", "Compose does not establish a provider-specific allowlist; inspect and test the actual egress boundary")
+    llm_networks = set((services.get("llm", {}).get("networks") or {}).keys())
+    proxy_networks = set((services.get("egress-proxy", {}).get("networks") or {}).keys())
+    llm_environment = services.get("llm", {}).get("environment") or {}
+    other_egress_services = sorted(
+        name for name, service in services.items()
+        if name != "egress-proxy"
+        and "llm-egress" in (service.get("networks") or {})
+    )
+    proxy_policy_declared = (
+        llm_networks == {"llm-gateway", "llm-proxy"}
+        and proxy_networks == {"llm-proxy", "llm-egress"}
+        and not other_egress_services
+        and networks.get("llm-proxy", {}).get("internal") is True
+        and networks.get("llm-egress", {}).get("internal") is not True
+        and llm_environment.get("BAYORA_LLM_EGRESS_PROXY") == "http://egress-proxy:8080"
+    )
+    emit(
+        "INFO" if proxy_policy_declared else "FAIL",
+        "LLM declared provider egress boundary",
+        "LLM has only internal network attachments and uses the allowlist proxy; runtime enforcement and provider reachability still require isolated deployment tests"
+        if proxy_policy_declared else
+        "LLM must attach only to llm-gateway and internal llm-proxy; egress-proxy must be the only service on llm-egress and the configured proxy URL must be present"
+        + (
+            f"; other services attached to llm-egress: {','.join(other_egress_services)}"
+            if other_egress_services else ""
+        ),
+    )
 
     gateway_ports = services.get("gateway", {}).get("ports", [])
     expected_ports = [{"host_ip": "127.0.0.1", "target": 8000, "published": "8000", "protocol": "tcp"}]
@@ -257,7 +346,7 @@ def check_static(config):
         "Compose declares only 127.0.0.1:8000/tcp; runtime bindings are checked separately"
         if normalized_ports == expected_ports else f"expected only 127.0.0.1:8000/tcp; found {normalized_ports}",
     )
-    for name in ("blue", "llm", "red"):
+    for name in ("blue", "llm", "egress-proxy", "red"):
         published = services.get(name, {}).get("ports", [])
         emit(
             "INFO" if not published else "FAIL",
@@ -277,7 +366,7 @@ def check_static(config):
 
 def parse_inspect_line(line):
     fields = line.split("|")
-    if len(fields) != 17:
+    if len(fields) != 21:
         return None
     try:
         return {
@@ -285,23 +374,27 @@ def parse_inspect_line(line):
             "running": fields[1] == "true",
             "service": fields[2],
             "project": fields[3],
-            "user": fields[4],
-            "privileged": fields[5] == "true",
-            "readonly": fields[6] == "true",
-            "cap_drop": json.loads(fields[7]),
-            "cap_add": json.loads(fields[8]),
-            "security_opt": json.loads(fields[9]),
-            "pids": int(fields[10]),
-            "nano_cpus": int(fields[11]),
-            "memory": int(fields[12]),
-            "networks": {name for name in fields[13].split(",") if name},
+            "oneoff": fields[4].strip().lower() == "true",
+            "user": fields[5],
+            "privileged": fields[6] == "true",
+            "readonly": fields[7] == "true",
+            "cap_drop": json.loads(fields[8]),
+            "cap_add": json.loads(fields[9]),
+            "security_opt": json.loads(fields[10]),
+            "pids": int(fields[11]),
+            "nano_cpus": int(fields[12]),
+            "memory": int(fields[13]),
+            "pid_mode": fields[14],
+            "ipc_mode": fields[15],
+            "uts_mode": fields[16],
+            "networks": {name for name in fields[17].split(",") if name},
             "network_ips": {
                 name: address
-                for item in fields[14].split(",") if "=" in item
+                for item in fields[18].split(",") if "=" in item
                 for name, address in (item.split("=", 1),)
             },
-            "ports": json.loads(fields[15]),
-            "mounts": fields[16],
+            "ports": json.loads(fields[19]),
+            "mounts": fields[20],
         }
     except (ValueError, TypeError, json.JSONDecodeError):
         return None
@@ -331,6 +424,9 @@ def inspect_containers(config):
         name = item["service"]
         if name not in SERVICES:
             continue
+        if item["oneoff"]:
+            emit("INFO", f"{name} one-off container", "excluded from normal service runtime selection")
+            continue
         if not item["running"]:
             emit("UNVERIFIED", f"{name} runtime", "container exists but is stopped")
             continue
@@ -358,6 +454,11 @@ def inspect_containers(config):
                 "Docker inspect reports the expected container setting; kernel enforcement is not proved by inspect"
                 if passed else "Docker inspect reports a mismatch; reconcile the running container with reviewed configuration",
             )
+        report_namespace_modes(name, {
+            "PID": item["pid_mode"],
+            "IPC": item["ipc_mode"],
+            "UTS": item["uts_mode"],
+        })
         extra_networks = item["networks"] - expected_networks
         missing_networks = expected_networks - item["networks"]
         if extra_networks or missing_networks:
@@ -419,16 +520,32 @@ def check_network_peers(containers, config):
         expected_names = {
             item["name"] for item in containers
             if item["running"]
+            and not item.get("oneoff", False)
             and item["service"] in expected_services
             and network_name in item["networks"]
         }
         unexpected = sorted(peers - expected_names)
         missing = sorted(expected_names - peers)
+        attached_services = {
+            item["service"] for item in containers
+            if item["running"]
+            and not item.get("oneoff", False)
+            and item["service"] in expected_services
+            and network_name in item["networks"]
+        }
+        missing_services = sorted(expected_services - attached_services)
         if unexpected or missing:
             emit(
                 "FAIL",
                 f"{alias} unexpected peers",
                 f"unexpected={','.join(unexpected) or 'none'}; expected-but-not-listed={','.join(missing) or 'none'}",
+            )
+        elif missing_services:
+            emit(
+                "UNVERIFIED",
+                f"{alias} peer membership",
+                "expected services are stopped or not attached: "
+                + ",".join(missing_services),
             )
         else:
             emit(
@@ -438,8 +555,10 @@ def check_network_peers(containers, config):
             )
 
 
-def run_read_only_probes(containers, config):
+def run_read_only_probes(containers, config, *, egress_probe_ip=None,
+                         egress_probe_port=None):
     by_service = {item["service"]: item for item in containers}
+    blue_health_reachable = False
     if "gateway" in by_service:
         host = run([sys.executable, "-c", HOST_HEALTH_CODE])
         emit("PASS" if host.returncode == 0 else "FAIL", "host to Gateway health", "loopback /health returned healthy" if host.returncode == 0 else "loopback Gateway health probe failed while a Gateway container is running")
@@ -486,6 +605,8 @@ def run_read_only_probes(containers, config):
                 emit("UNVERIFIED", f"Gateway to {target}", "target response was malformed")
                 continue
             passed = result.get("status") == 200
+            if target == "http://blue:8001/health":
+                blue_health_reachable = passed
             emit(
                 "PASS" if passed else "FAIL",
                 f"Gateway to {target}",
@@ -522,6 +643,42 @@ def run_read_only_probes(containers, config):
     else:
         emit("UNVERIFIED", "Blue to Gateway", "both containers must be running to test the intended path")
 
+    if red and gateway:
+        target = "http://gateway:8000/health"
+        probe = run(["docker", "exec", red["name"], "python", "-c", PROBE_CODE, target])
+        if probe.returncode:
+            emit("UNVERIFIED", "Red to Gateway", "docker exec failed; expected local service path was not tested")
+        else:
+            try:
+                data = json.loads(probe.stdout)
+            except (json.JSONDecodeError, TypeError):
+                data = None
+            http_results = data.get("http") if isinstance(data, dict) else None
+            result = http_results.get(target) if isinstance(http_results, dict) else None
+            if not isinstance(result, dict):
+                emit("UNVERIFIED", "Red to Gateway", "no target-specific response was observed")
+            else:
+                passed = result.get("status") == 200
+                emit(
+                    "PASS" if passed else "FAIL",
+                    "Red to Gateway",
+                    "local health endpoint returned HTTP 200" if passed
+                    else f"local health endpoint did not return HTTP 200: {result}",
+                )
+    else:
+        emit("UNVERIFIED", "Red to Gateway", "running Red and Gateway containers are required; the verifier will not start them")
+
+    _run_red_blue_probe(
+        red,
+        blue,
+        config,
+        blue_health_reachable=blue_health_reachable,
+    )
+
+    run_llm_egress_probe(by_service, egress_probe_ip, egress_probe_port)
+
+
+def _run_red_blue_probe(red, blue, config, *, blue_health_reachable):
     if red and blue:
         blue_network = (config.get("networks", {}).get("blue-gateway") or {})
         network_name = (
@@ -553,23 +710,120 @@ def run_read_only_probes(containers, config):
         result = http_results.get(target) if isinstance(http_results, dict) else None
         if not isinstance(result, dict):
             result = {}
-        status, detail = classify_red_blue_result(result)
+        status, detail = classify_red_blue_result(
+            result,
+            blue_health_reachable=blue_health_reachable,
+        )
         emit(status, "Red to Blue direct access", detail)
     else:
         emit("UNVERIFIED", "Red to Blue direct access", "running Red and Blue containers are required; the verifier will not start them")
 
 
-def classify_red_blue_result(result):
+def classify_red_blue_result(result, *, blue_health_reachable=False):
     if not isinstance(result, dict):
         return "UNVERIFIED", "probe result is malformed; network isolation was not established"
     if "status" in result:
         return "FAIL", f"Blue returned HTTP {result['status']} to Red; network path is reachable"
     if result.get("error") == "unreachable":
+        if not blue_health_reachable:
+            return (
+                "UNVERIFIED",
+                "Blue health was not confirmed through Gateway; unreachable may reflect an unavailable target",
+            )
         return "PASS", "kernel reported the private target as network/host unreachable"
     return (
         "UNVERIFIED",
         f"probe result {result.get('error', 'missing/ambiguous')!r} does not prove segmentation; timeout/refusal require separate diagnosis",
     )
+
+
+def _namespace_mode_is_shared(mode):
+    normalized = str(mode or "").strip().lower()
+    return normalized == "host" or normalized.startswith("container:") or normalized == "shareable"
+
+
+def report_namespace_modes(service, modes):
+    for namespace, mode in modes.items():
+        shared = _namespace_mode_is_shared(mode)
+        emit(
+            "FAIL" if shared else "PASS",
+            f"{service} runtime {namespace} namespace",
+            f"Docker reports shared namespace mode {mode!r}" if shared
+            else f"Docker reports private/default namespace mode {mode!r}",
+        )
+
+
+def run_llm_egress_probe(by_service, destination_ip, destination_port):
+    check = "LLM direct egress"
+    if destination_ip is None and destination_port is None:
+        emit(
+            "UNVERIFIED", check,
+            "no deployment-owner-controlled probe IP/port was supplied; no destination was tested",
+        )
+        return
+    if destination_ip is None or destination_port is None:
+        emit("UNVERIFIED", check, "both a controlled public probe IP and TCP port are required")
+        return
+    try:
+        address = ipaddress.ip_address(destination_ip)
+    except (TypeError, ValueError):
+        emit("UNVERIFIED", check, "probe destination must be a public IP literal; DNS names are not accepted")
+        return
+    if not address.is_global or not isinstance(destination_port, int) or not 1 <= destination_port <= 65535:
+        emit("UNVERIFIED", check, "probe destination must be a public IP and TCP port from 1 through 65535")
+        return
+
+    proxy = by_service.get("egress-proxy")
+    llm = by_service.get("llm")
+    if not proxy or not llm:
+        emit("UNVERIFIED", check, "running egress-proxy and LLM containers are required; the verifier will not start them")
+        return
+
+    target = [str(address), str(destination_port)]
+    baseline = run([
+        "docker", "exec", proxy["name"], "python", "-c",
+        SOCKET_CONNECT_PROBE_CODE, *target,
+    ])
+    if baseline.returncode:
+        emit("UNVERIFIED", check, "positive-baseline probe failed to execute in egress-proxy")
+        return
+    try:
+        baseline_result = json.loads(baseline.stdout)
+    except (json.JSONDecodeError, TypeError):
+        baseline_result = None
+    if not isinstance(baseline_result, dict) or baseline_result.get("connected") is not True:
+        error = baseline_result.get("error", "missing/invalid result") if isinstance(baseline_result, dict) else "missing/invalid result"
+        emit("UNVERIFIED", check, f"probe endpoint was not positively reachable from egress-proxy ({error}); LLM result was not interpreted")
+        return
+
+    result = run([
+        "docker", "exec", llm["name"], "python", "-c",
+        SOCKET_CONNECT_PROBE_CODE, *target,
+    ])
+    if result.returncode:
+        emit("UNVERIFIED", check, "LLM probe failed to execute after the positive baseline")
+        return
+    try:
+        llm_result = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        llm_result = None
+    status, detail = classify_llm_egress_result(baseline_result, llm_result)
+    emit(status, check, detail)
+
+
+def classify_llm_egress_result(baseline_result, llm_result):
+    if not isinstance(baseline_result, dict) or baseline_result.get("connected") is not True:
+        return "UNVERIFIED", "a positive egress-proxy baseline is required before interpreting the LLM result"
+    if not isinstance(llm_result, dict):
+        return "UNVERIFIED", "LLM probe result is missing or invalid"
+    if llm_result.get("connected") is True:
+        return "FAIL", "LLM connected directly to the controlled destination after the baseline succeeded"
+    error = llm_result.get("error")
+    if error == "connection_refused":
+        return "FAIL", "the destination refused the LLM connection, which does not establish network isolation"
+    if isinstance(error, str) and error in {"network_unreachable", "host_unreachable"}:
+        return "PASS", "controlled destination was reachable from egress-proxy but the LLM received a kernel unreachable result"
+    return "UNVERIFIED", f"LLM probe result {error!r} is inconclusive"
 
 
 def _number_equals(value, expected):
@@ -714,7 +968,19 @@ def main():
         action="store_true",
         help="make read-only health and /proc/cgroup probes in existing running containers",
     )
+    parser.add_argument(
+        "--egress-probe-ip",
+        help="optional deployment-owner-controlled public IP for the LLM direct-egress probe (requires --probe and --egress-probe-port)",
+    )
+    parser.add_argument(
+        "--egress-probe-port",
+        type=int,
+        help="TCP port of the controlled egress probe destination",
+    )
     args = parser.parse_args()
+
+    if (args.egress_probe_ip is not None or args.egress_probe_port is not None) and not args.probe:
+        parser.error("--egress-probe-ip/--egress-probe-port require --probe")
 
     if shutil.which("docker") is None:
         emit("UNVERIFIED", "Docker checks", "Docker CLI unavailable")
@@ -730,7 +996,11 @@ def main():
     containers = inspect_containers(config)
     passive_stats([item for item in containers if item["running"]])
     if args.probe:
-        run_read_only_probes([item for item in containers if item["running"]], config)
+        run_read_only_probes(
+            [item for item in containers if item["running"]], config,
+            egress_probe_ip=args.egress_probe_ip,
+            egress_probe_port=args.egress_probe_port,
+        )
 
     print(f"SUMMARY {COUNTS}")
     if COUNTS["FAIL"]:
