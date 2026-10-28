@@ -9,15 +9,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Clean, Modern Styling
-st.markdown("""
-<style>
-    .title-text { font-size: 2rem; font-weight: 800; color: #1e293b; margin-bottom: 0px; }
-    .subtitle-text { font-size: 1rem; color: #64748b; margin-bottom: 25px; }
-    .step-box { background: #f8fafc; border-left: 4px solid #3b82f6; padding: 12px 16px; margin-bottom: 12px; border-radius: 4px; }
-</style>
-""", unsafe_allow_html=True)
-
 # Initialize Session Audit Trail
 if "audit_trail" not in st.session_state:
     st.session_state.audit_trail = [
@@ -57,8 +48,8 @@ with st.sidebar:
     st.caption("Galgotias University | Hack in Hills")
 
 # Header
-st.markdown('<div class="title-text">🛡️ BAYORA — Adversarial AI Testing Console</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle-text">Test AI models against prompt injections and attacks while Blue Team monitors safety in isolated containers.</div>', unsafe_allow_html=True)
+st.title("🛡️ BAYORA — Adversarial AI Testing Console")
+st.caption("Test AI models against prompt injections and attacks while Blue Team monitors safety in isolated containers.")
 
 # 2 Clear Tabs
 tab_test, tab_audit = st.tabs(["🎯 Adversarial Test Console", "📜 Verifiable Audit Ledger"])
@@ -91,7 +82,7 @@ with tab_test:
         
         if submit_btn and user_input.strip():
             with st.spinner("Processing through Gateway ➔ Model ➔ Blue Team..."):
-                time.sleep(0.7)
+                time.sleep(0.6)
 
             lower_prompt = user_input.lower()
             is_attack = any(w in lower_prompt for w in ["ignore", "system prompt", "reveal", "malware", "steal", "defense_weights", "bypass", "jailbreak", "override"])
@@ -105,39 +96,36 @@ with tab_test:
                 blue_score = "0/100 (Unsafe - Threat Blocked)"
                 
                 st.error("❌ **GATEWAY DECISION: BLOCKED (HTTP 403)**")
-                st.markdown(f"""
-                <div class="step-box">
-                    <b>Step 1: Gateway Inspection</b><br>
-                    Threat detected: Adversarial pattern or policy violation identified.
-                </div>
-                <div class="step-box">
-                    <b>Step 2: Client LLM State</b><br>
-                    Protected. Request was dropped at the Gateway boundary; model was never exposed.
-                </div>
-                <div class="step-box">
-                    <b>Step 3: Blue Team Safety Evaluation</b><br>
-                    Defense Score: <b>0/100</b>. Malicious intent flagged and prevented.
-                </div>
-                """, unsafe_allow_html=True)
+                
+                with st.container(border=True):
+                    st.markdown("**🛡️ Step 1: Gateway Inspection**")
+                    st.write("Threat detected: Adversarial pattern or policy violation identified.")
+
+                with st.container(border=True):
+                    st.markdown("**🤖 Step 2: Client LLM State**")
+                    st.write("Protected. Request was dropped at the Gateway boundary; model was never exposed.")
+
+                with st.container(border=True):
+                    st.markdown("**🔵 Step 3: Blue Team Safety Evaluation**")
+                    st.write("Defense Score: **0 / 100 (Unsafe - Threat Blocked)**. Malicious intent flagged and prevented.")
+
             else:
                 decision = "ALLOW"
                 blue_score = "98/100 (Safe)"
                 
                 st.success("✅ **GATEWAY DECISION: ALLOWED (HTTP 200)**")
-                st.markdown(f"""
-                <div class="step-box">
-                    <b>Step 1: Gateway Inspection</b><br>
-                    Prompt verified clean. No adversarial patterns detected.
-                </div>
-                <div class="step-box">
-                    <b>Step 2: Client LLM Response</b><br>
-                    <i>"Multi-tenant isolation ensures that different teams and models can run on shared infrastructure without cross-tenant data leakage."</i>
-                </div>
-                <div class="step-box">
-                    <b>Step 3: Blue Team Safety Evaluation</b><br>
-                    Defense Score: <b>98/100</b>. Response verified safe, non-toxic, and compliant.
-                </div>
-                """, unsafe_allow_html=True)
+                
+                with st.container(border=True):
+                    st.markdown("**🛡️ Step 1: Gateway Inspection**")
+                    st.write("Prompt verified clean. No adversarial patterns or injection detected.")
+
+                with st.container(border=True):
+                    st.markdown("**🤖 Step 2: Client LLM Response**")
+                    st.write("Multi-tenant isolation ensures that different teams and models can run on shared infrastructure without cross-tenant data leakage.")
+
+                with st.container(border=True):
+                    st.markdown("**🔵 Step 3: Blue Team Safety Evaluation**")
+                    st.write("Defense Score: **98 / 100 (Safe)**. Response verified compliant, safe, and non-toxic.")
 
             # Record into real audit trail
             new_hash = hashlib.sha256(f"{seq}:{now_str}:{decision}:{prev_hash}".encode()).hexdigest()
@@ -182,17 +170,15 @@ with tab_audit:
     if verify_btn:
         if st.session_state.tampered:
             st.error("🚨 **INTEGRITY CHECK FAILED: TAMPERING DETECTED!**")
-            st.markdown("""
-            * **Diagnosis**: The database log sequence does not match the external checkpoint anchor (Tail-Truncation).
-            * **Result**: The system detected that the newest record was deleted. **Verification Fails Closed!**
-            """)
+            with st.container(border=True):
+                st.write("**Diagnosis:** The database log sequence does not match the external checkpoint anchor (Tail-Truncation).")
+                st.write("**Result:** The system detected that the newest record was deleted. **Verification Fails Closed!**")
         else:
             st.success("✅ **CRYPTOGRAPHIC INTEGRITY VERIFIED (Valid: True)**")
-            st.markdown("""
-            * All SHA-256 links from Sequence 1 to Head are intact.
-            * Database chain matches the trusted external checkpoint. 
-            * **0 records modified, 0 records deleted.**
-            """)
+            with st.container(border=True):
+                st.write("● All SHA-256 links from Sequence 1 to Head are intact.")
+                st.write("● Database chain matches the trusted external checkpoint.")
+                st.write("● **0 records modified, 0 records deleted.**")
 
     # Render Table
     display_data = st.session_state.audit_trail.copy()
