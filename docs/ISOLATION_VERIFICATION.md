@@ -1,5 +1,53 @@
 # BAYORA resource and isolation verification
 
+## Latest candidate evidence (2026-10-28)
+
+This section supersedes the older runtime snapshots later in this document
+for the candidate commit `95c60f17939fb3af7e802b56e79c0c92e9db2c77`. The
+candidate was built and run in a uniquely named, isolated Compose project with
+synthetic credentials and a temporary verification overlay; the primary
+BAYORA project, unrelated containers, networks, and volumes were not changed.
+The verifier run `a8ade081-2121-44c1-9835-77e1eee6a1c1` reported **123 PASS,
+0 FAIL, 11 UNVERIFIED, 98 INFO**. An UNVERIFIED result is not a pass.
+
+Observed live evidence:
+
+- Compose configuration validation and all five candidate image builds
+  succeeded. Gateway, Blue, LLM, and egress proxy became healthy; Red was
+  running for the tests.
+- Only Gateway published a host port (`127.0.0.1:8000`); Windows loopback
+  `/health` succeeded. Blue, LLM, Red, and egress proxy had no published
+  ports.
+- Red reached Gateway, but a direct Red-to-Blue probe failed with an explicit
+  network-unreachable result while Blue's Gateway-mediated health path worked.
+  The live Red runner's three configured cases passed. A separate host-side
+  run with synthetic Red and Blue caller tokens passed all four cases, and its
+  persisted report reloaded consistently with observed HTTP results, policy
+  decisions, and audit event IDs.
+- `CONNECT example.invalid:443` through the live egress proxy returned HTTP
+  403. The LLM was attached only to internal `llm-gateway` and `llm-proxy`;
+  only the proxy was attached to non-internal `llm-egress`.
+- Each service ran as UID/GID `10001:10001`, with `CapEff=0`,
+  `NoNewPrivs=1`, `Seccomp=2`, a read-only root filesystem, and observed
+  cgroup v2 values matching Compose: Gateway `100000 100000` CPU,
+  `536870912` bytes memory, 128 PIDs; Blue, LLM, Red `50000 100000`,
+  `268435456` bytes, 64 PIDs; proxy `25000 100000`, `134217728` bytes,
+  32 PIDs. These observations establish configured effective limits, not
+  sustained contention behavior.
+
+Unresolved: the verifier could not establish a named seccomp profile or rules,
+and no deployment-owner-controlled, positively reachable external listener
+was available to validate the LLM egress baseline and direct-LLM denial. The
+proxy's prohibited-destination response was tested, but approved external
+egress and provider connectivity were not tested; no provider request was
+made. Compose network topology and an active seccomp filter do not prove
+host-level egress enforcement or resistance to host compromise.
+
+The full Python suite at this candidate passed **233 tests** with one existing
+Starlette/httpx deprecation warning. The 24 legacy Red reports all loaded.
+These software tests do not substitute for the live checks or resolve the
+UNVERIFIED results.
+
 ## Scope and safety
 
 This guide verifies static Compose settings and, when containers are already
@@ -180,7 +228,7 @@ Record each result with category and actual evidence:
 | Gateway-to-Blue/LLM | Health succeeds | Fill from local probes | Runtime | |
 | Host publication | Only loopback Gateway port | Fill from inspected port bindings | Runtime | |
 | Unlisted network peers | No unknown containers attached | Fill from Docker network inspection | Runtime | |
-| LLM egress | Approved destinations only | Earlier audit snapshot: ordinary bridge had no provider allowlist; current runtime **NOT VERIFIED** | Static/runtime | |
+| LLM egress | Approved destinations only | Candidate: LLM on internal networks, proxy-only external network, prohibited CONNECT returned 403; positive external baseline and direct-LLM denial **UNVERIFIED** | Static/runtime | |
 | Contention | Limits respected without host instability | Only with isolated bounded load test | Runtime | |
 
 ## Historical runtime inspection (2026-10-28; source HEAD `98ef19c`)
@@ -441,7 +489,7 @@ unavailable; the Python environment also has no YAML parser. These test
 results do not substitute for Compose parsing or the unperformed LLM egress
 tests.
 
-## Latest recorded independent audit (2026-10-28; historical runtime snapshot)
+## Older independent audit (2026-10-28; superseded runtime snapshot)
 
 That audit reports **157 tests passed** and `docker compose config
 --quiet` passed. These results validate the test suite and Compose syntax at

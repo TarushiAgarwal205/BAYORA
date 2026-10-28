@@ -63,13 +63,43 @@ docker compose ps
 docker compose logs --tail=100 gateway blue llm egress-proxy
 ```
 
+## Verification snapshot (2026-10-28)
+
+The hardening candidate at `95c60f17939fb3af7e802b56e79c0c92e9db2c77` was
+built and exercised in a separately named, disposable Compose project using
+synthetic credentials and a temporary verification-only overlay. The full
+Python suite passed **233 tests** (one existing Starlette/httpx deprecation
+warning), and all **24** saved legacy Red reports loaded. The live isolation
+verifier reported **123 PASS, 0 FAIL, 11 UNVERIFIED**. Its unresolved checks
+include seccomp profile identity and a positive LLM-egress probe against an
+approved, reachable external test listener.
+
+The live Red runner passed its three configured denial cases. A separate
+controlled Gateway run with synthetic Red and Blue credentials passed all
+four cases; observed policy decisions, HTTP outcomes, audit event IDs, and
+the saved/reloaded run report were consistent. Runtime inspection confirmed
+Red cannot reach Blue directly, the egress proxy rejects `CONNECT
+example.invalid:443` with HTTP 403, and only Gateway publishes
+`127.0.0.1:8000`. The five services ran as UID/GID `10001:10001` with no
+effective capabilities, `NoNewPrivs=1`, active seccomp filter mode 2,
+read-only root filesystems, and the configured CPU, memory, and PID cgroup
+limits.
+
+This evidence is limited to that isolated local run. No provider request was
+made; approved external egress success, direct-LLM egress denial against a
+positive external baseline, and named seccomp profile/rules remain
+**UNVERIFIED**. The report counts do not establish production-grade
+isolation, host compromise resistance, or external audit authenticity. See
+[docs/ISOLATION_VERIFICATION.md](docs/ISOLATION_VERIFICATION.md) and
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for scope and deployment checks.
+
 Follow [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for rollback guidance; do not
 use a broad stack shutdown where unrelated or unidentified containers share
 the deployment networks.
 
-The Compose declaration publishes only Gateway on `127.0.0.1:8000`; Blue, LLM, and the egress proxy have no declared published ports. Red and Blue use separate internal networks. Gateway also joins those networks and `llm-gateway`, plus the non-internal `gateway-host` bridge. The egress proxy is the only service declared on the separate external `llm-egress` bridge; this does not mean Gateway lacks non-internal networking. The proxy accepts CONNECT only for `openrouter.ai:443`, resolves that hostname itself, and rejects non-public DNS answers. SNI is a routing check, not provider authentication; because TLS remains end-to-end, the proxy cannot inspect the encrypted HTTP authority or path. The LLM fails closed if its proxy URL is missing. These are repository controls, not proof of the running topology. The latest independent audit found the running LLM attached to `bayora_llm-egress` while `bayora-egress-proxy-1` was absent; runtime LLM egress enforcement is **NOT VERIFIED**. The Red container was stopped, so normal Red-runner isolation is **NOT VERIFIED**. Gateway's `gateway-host` attachment creates a potential outbound route, but its reachable destinations and egress policy have not been verified. The proxy container's external egress and a compromised Docker host remain outside the code-level allowlist. Services declare non-root execution, dropped capabilities, `no-new-privileges`, read-only root filesystems, limited writable mounts/tmpfs, and CPU/memory/PID limits; runtime enforcement still needs verification.
+The Compose declaration publishes only Gateway on `127.0.0.1:8000`; Blue, LLM, Red, and the egress proxy have no declared published ports. Red and Blue use separate internal networks. Gateway also joins those networks and `llm-gateway`, plus the non-internal `gateway-host` bridge, so Gateway egress is not restricted by this topology. The egress proxy is the only service declared on the separate non-internal `llm-egress` bridge. The proxy accepts CONNECT only for `openrouter.ai:443`, resolves that hostname itself, and rejects non-public DNS answers. SNI is a routing check, not provider authentication; because TLS remains end-to-end, the proxy cannot inspect the encrypted HTTP authority or path. The LLM fails closed if its proxy URL is missing. These repository controls do not establish host-level egress enforcement, protect a compromised proxy/host, or prove provider connectivity.
 
-An earlier runtime check reported HTTP 200 from `http://127.0.0.1:8000/health` after Gateway recreation. A later independent audit reported Windows host access blocked. The chronology and present status cannot be established from those conflicting historical results, so current host access is **NOT VERIFIED**; see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the required fresh check. Host port publication is inbound access and does not establish Gateway egress restrictions or network isolation. The latest independent audit reports `docker compose config --quiet` passed and the full suite passed **157 tests**; these results do not prove runtime isolation. Run `venv\Scripts\python.exe -m scripts.verify_isolation --probe` when the actual Red service is running to inspect runtime attachments, health routes, and Red-to-Blue reachability; it does not perform provider egress probes. Runtime LLM egress enforcement, proxy rejection in the running deployment, and normal Red-runner isolation remain **NOT VERIFIED**. Provider reachability requires a deployment-owner-approved test with a non-production credential and synthetic prompt; no successful provider call is claimed. Identify the owner of `bayora-port-test` before any action on it.
+In the 2026-10-28 candidate runtime, the Gateway loopback health check succeeded, Red could not connect directly to Blue, the LLM was attached only to internal networks, and the proxy rejected a prohibited synthetic CONNECT with HTTP 403. The candidate isolation verifier still reported **11 UNVERIFIED** checks; approved external egress success, direct-LLM denial against a positive external baseline, and seccomp profile identity remain unverified. Older runtime snapshots below are historical and do not describe the candidate stack. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [docs/ISOLATION_VERIFICATION.md](docs/ISOLATION_VERIFICATION.md) for current evidence and the remaining controlled checks. The unexplained `bayora-port-test` container was not touched.
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for startup, environment variables, rollback readiness, and deployment-host verification steps.
 

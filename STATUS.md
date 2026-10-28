@@ -1,5 +1,37 @@
 # Bayora status
 
+## Current candidate verification (2026-10-28)
+
+This section is authoritative for hardening candidate
+`95c60f17939fb3af7e802b56e79c0c92e9db2c77`; older status entries below are
+historical snapshots and must not be used as evidence for this runtime.
+
+| Feature area | Current status | Evidence / remaining limitation |
+|---|---|---|
+| Container isolation | IMPLEMENTED AND LIVE-VERIFIED for the isolated candidate stack | All five services ran non-root, with zero effective capabilities, `NoNewPrivs=1`, active seccomp mode 2, read-only root filesystems, and expected `/tmp` tmpfs. Seccomp profile identity/rules are not identified. |
+| Network segmentation and LLM egress | PARTIALLY LIVE-VERIFIED | Red-to-Blue direct probe was unreachable; approved Gateway routes worked. The LLM was only on internal networks, the proxy alone had external-network membership, and prohibited CONNECT returned 403. Direct-LLM denial against a positive external baseline and approved external connectivity remain UNVERIFIED. |
+| Resource governance | IMPLEMENTED AND LIVE-VERIFIED for configured cgroups | Effective CPU, memory, and PID cgroup values matched Compose for all five services. No sustained contention test was run. |
+| Access and secret isolation | IMPLEMENTED AND TESTED | Synthetic live scenarios observed allowed Blue access and denied Red/protected and LLM-policy cases with matching audit event IDs. Shared prototype tokens are not production identity; no real secret was used. |
+| Tamper-evident audit | IMPLEMENTED AND TESTED, limited guarantee | Audit integrity/checkpoint behavior is covered by the suite. Same-host compromise or rollback of matching database/checkpoint/key remains outside the guarantee; this is not a tamper-proof log. |
+| Security monitoring | IMPLEMENTED AND TESTED | Existing audit/anomaly paths are included in the passing suite; detection uses limited heuristics, not comprehensive monitoring. |
+| Isolation verification | IMPLEMENTED AND LIVE-VERIFIED WITH UNVERIFIED RESULTS | Run `a8ade081-2121-44c1-9835-77e1eee6a1c1`: 123 PASS, 0 FAIL, 11 UNVERIFIED, 98 INFO. UNVERIFIED is not success. |
+| Evidence-backed security testing | IMPLEMENTED AND LIVE-VERIFIED for controlled scenarios | Red in-container run 3/3; host-side synthetic Red/Blue run 4/4 with observed responses, policy decisions, audit IDs, and saved report reload. No external provider call. |
+| Verifiable results | IMPLEMENTED AND TESTED | Full suite passed 233 tests; all 24 saved legacy reports loaded. Reports are internally validated evidence, not proof of general security. |
+
+Candidate full-suite command:
+`venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --basetemp <fresh-TEMP-directory>`
+— **233 passed, 1 existing Starlette/httpx deprecation warning**.
+`docker compose config --quiet` and all five image builds succeeded. The
+candidate was tested in a separate Compose project; these results do not
+assert that the main-branch deployment or production environment is live.
+No provider request was made.
+
+The candidate changes are published on
+`copilot/bayora-security-verification-hardening`, but are not merged into
+`main`. No pull request was opened because the available GitHub session is
+unauthenticated and no PR-creation operation is available. A reviewed PR
+targeting `main` is still required; no merge is claimed.
+
 Status updated 2026-10-27. The dashboard remains served at `/dashboard/`. **DEMO STUB: `/test` is not a real security test.**
 
 | Component | Status |

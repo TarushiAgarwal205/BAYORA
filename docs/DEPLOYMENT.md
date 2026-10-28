@@ -35,17 +35,13 @@ checks are Gateway `/health`, Blue `/health`, LLM `/health`, and a TCP listener
 check for the egress proxy on port 8080. Only Gateway should publish a host
 port, on `127.0.0.1:8000`; no other service should have a published host port.
 
-A prior runtime report recorded HTTP 200 from the Gateway's Windows loopback
-health endpoint at `http://127.0.0.1:8000/health` and an effective Docker
-mapping on `127.0.0.1:8000`. The latest independent audit instead reported
-Windows host access as blocked. The chronology and current state cannot be
-established from these conflicting reports, so current Gateway host access is
-**NOT VERIFIED**. Verify the effective mapping and host `/health` response
-again before enabling dependent users. Verify `/dashboard/` separately. Host
-port publication is inbound access and does not establish Red/Blue network
-isolation or constrain Gateway outbound access: Gateway is attached to the
-non-internal `gateway-host` bridge, and its reachable destinations and egress
-policy remain unverified.
+The 2026-10-28 candidate verification recorded an effective Docker binding on
+`127.0.0.1:8000` and a successful Gateway `/health` response from Windows
+loopback. `/dashboard/` and service health checks also succeeded in the
+isolated test project. This supersedes older snapshots below that found the
+host publication inactive; those findings describe different, stopped
+containers, not this candidate run. Port publication is inbound access and
+does not establish network isolation or constrain Gateway outbound access.
 
 ## Runtime verification
 
@@ -82,13 +78,15 @@ essential. There is no host-level deny rule constraining the proxy's own
 external connections, so code-level policy and Compose topology still require
 runtime verification and do not resist a compromised proxy or host.
 
-The latest independent runtime audit found `bayora-llm-1` attached to
-`bayora_llm-egress` while `bayora-egress-proxy-1` was absent. Runtime LLM
-egress enforcement is therefore **NOT VERIFIED**. The Red container was
-stopped, so normal Red-runner access to Gateway and isolation from Blue are
-also **NOT VERIFIED**. The owner of `bayora-port-test` remains unknown; do not
-change it or its network attachment without establishing ownership and
-authorization.
+In the 2026-10-28 isolated candidate run, Red reached Gateway but could not
+reach Blue directly; the LLM was attached only to internal `llm-gateway` and
+`llm-proxy`, while only `egress-proxy` joined non-internal `llm-egress`. The
+proxy returned HTTP 403 for `CONNECT example.invalid:443`. This verifies the
+observed topology and prohibited-destination rejection in that run. It does
+not verify that an approved external destination succeeds or that direct LLM
+egress fails against a positive, deployment-owner-controlled listener. No
+provider request was made. Older `bayora-*` runtime snapshots below refer to
+other containers and are not evidence about the isolated candidate stack.
 
 The optional direct-egress probe requires an IP and TCP port for a
 deployment-owner-controlled public listener. The listener must be reachable
@@ -110,9 +108,29 @@ credentials or prompt content.
 These runtime probes and Compose declarations do not protect against a
 compromised egress-proxy process or Docker host. In the intended Compose
 topology, the proxy is the LLM's sole external network path and its destination
-policy is enforced by code; the latest runtime audit found that topology was
-not in effect. Host-level default-deny egress for the proxy itself is not
-configured here.
+policy is enforced by code. Host-level default-deny egress for the proxy itself
+is not configured here.
+
+## Candidate runtime evidence (2026-10-28)
+
+The candidate commit `95c60f17939fb3af7e802b56e79c0c92e9db2c77` was built and
+started under an isolated project name, with synthetic-only credentials and a
+temporary overlay. Gateway, Blue, LLM, and egress proxy became healthy; Red
+was running for controlled tests. Only Gateway published loopback port 8000.
+The live verifier reported **123 PASS, 0 FAIL, 11 UNVERIFIED**. All five
+containers reported UID/GID `10001:10001`, `CapEff=0`, `NoNewPrivs=1`,
+`Seccomp=2`, read-only root filesystems, and effective cgroup limits matching
+Compose: Gateway 1 CPU/512 MiB/128 PIDs; Blue, LLM, and Red 0.5 CPU/256
+MiB/64 PIDs each; egress proxy 0.25 CPU/128 MiB/32 PIDs. Seccomp mode 2
+confirms a filter is active but does not identify its profile or rules.
+
+The verifier's remaining UNVERIFIED results include the absence of a named
+seccomp profile and the lack of an approved, positively reachable external
+listener for the LLM-egress baseline. The proxy's HTTP 403 for a synthetic
+prohibited CONNECT was observed, but no approved external destination or
+provider was contacted. The host-side synthetic Red/Blue scenario run passed
+4/4; the in-container Red-configured run passed 3/3. These checks do not
+establish production hardening or sustained resource behavior under load.
 
 ## Rollback readiness
 
@@ -159,10 +177,10 @@ historical snapshot, not the latest Compose result.
 
 ## Latest independent verification
 
-The latest independent audit reports **157 tests passed** and
-`docker compose config --quiet` passed. Image build readiness was not reported
-as verified. The audit still found Windows Gateway access blocked on port
-8000, the running LLM attached to `bayora_llm-egress`, the egress proxy
-container absent, and the Red container stopped. Runtime LLM egress
-enforcement and normal Red-runner isolation remain **NOT VERIFIED**. These
-results do not establish runtime isolation or successful provider traffic.
+This historical audit reported **157 tests passed** and
+`docker compose config --quiet` passed. It found Windows Gateway access
+blocked on port 8000, the running LLM attached to `bayora_llm-egress`, the
+egress proxy absent, and Red stopped. Those observations were made against a
+different runtime and are superseded for the hardening candidate by the
+2026-10-28 candidate runtime evidence above; they do not describe the isolated
+candidate project.

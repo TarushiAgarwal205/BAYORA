@@ -1,5 +1,53 @@
 # BAYORA Integration and Follow-up Verification Report
 
+## Authoritative candidate update (2026-10-28)
+
+This update supersedes earlier verification counts and runtime claims in this
+historical report for candidate commit
+`95c60f17939fb3af7e802b56e79c0c92e9db2c77`. The candidate branch was built
+and tested in a separate, uniquely named Compose project using synthetic
+credentials and a temporary verification overlay. The primary checkout and
+other existing worktrees were preserved.
+
+- **Tests:** Full suite — **233 passed**, one existing Starlette/httpx
+  deprecation warning. All **24/24** existing saved Red reports loaded.
+- **Compose/runtime:** `docker compose config --quiet` and five image builds
+  succeeded. Gateway, Blue, LLM, and egress proxy became healthy; Red ran for
+  controlled test cases. Only Gateway published `127.0.0.1:8000`, and its
+  Windows loopback `/health` responded successfully.
+- **Isolation verifier:** run
+  `a8ade081-2121-44c1-9835-77e1eee6a1c1` reported **123 PASS, 0 FAIL,
+  11 UNVERIFIED, 98 INFO**. Seccomp mode 2 was observed, but profile identity
+  and rules were not established. A positive external LLM-egress baseline
+  could not be tested because no approved, reachable external listener was
+  provided.
+- **Network and egress:** Red reached Gateway and could not reach Blue
+  directly. LLM attached only to internal `llm-gateway`/`llm-proxy`; only the
+  proxy attached to non-internal `llm-egress`. A prohibited synthetic
+  `CONNECT example.invalid:443` received HTTP 403. No approved external
+  destination or provider was contacted; direct-LLM egress denial and
+  successful approved external egress remain UNVERIFIED.
+- **Runtime restrictions:** all five containers reported UID/GID
+  `10001:10001`, `CapEff=0`, `NoNewPrivs=1`, `Seccomp=2`, and read-only root
+  filesystems. Effective CPU/memory/PID cgroup settings matched Compose:
+  Gateway 1 CPU/512 MiB/128 PIDs; Blue, LLM, and Red 0.5 CPU/256 MiB/64 PIDs;
+  proxy 0.25 CPU/128 MiB/32 PIDs. No resource-contention stress test was run.
+- **Evidence workflow:** Red's configured in-container cases passed **3/3**.
+  A separate live Gateway workflow with synthetic Red and Blue caller tokens
+  passed **4/4**; actual HTTP outcomes, policy decisions, audit event IDs, and
+  report reload were consistent. The report was written to a fresh temporary
+  directory and did not overwrite saved reports.
+- **Publication:** candidate implementation commit
+  `95c60f17939fb3af7e802b56e79c0c92e9db2c77` is pushed to
+  `copilot/bayora-security-verification-hardening`, not merged into `main`.
+  No PR exists. Creating one requires an authenticated GitHub session; the
+  compare URL is
+  `https://github.com/TarushiAgarwal205/BAYORA/compare/main...copilot/bayora-security-verification-hardening?expand=1`.
+
+These are local candidate-run observations, not production verification.
+Hash/checkpoint integrity is not tamper-proof against an attacker able to
+rewrite both stores or compromise the host. No provider request was made.
+
 > **Follow-up implementation update (2026-10-27):** The sections below record the earlier Antigravity integration. This addendum is the authoritative status after implementing the admin policy console, prompt inspection, scenario library, incident workspace, and persistent detection settings. The earlier 92-test result is superseded by the 101-test result below.
 
 ### Follow-up features implemented in the primary project
