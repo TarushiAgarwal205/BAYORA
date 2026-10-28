@@ -494,9 +494,17 @@ class AuditStore:
     def verify_integrity(self):
         # SQLite is committed before the independent checkpoint advances.
         # Share the writer lock so readers cannot observe that brief interval.
-        with self.checkpoint.writer_lock():
-            with self._connection() as connection:
-                return self._verify_integrity_connection(connection)
+        try:
+            with self.checkpoint.writer_lock():
+                with self._connection() as connection:
+                    return self._verify_integrity_connection(connection)
+        except (OSError, sqlite3.DatabaseError, TypeError, ValueError, UnicodeError) as error:
+            return {
+                "valid": False,
+                "checked_entries": 0,
+                "checked_events": 0,
+                "reason": f"audit integrity data is malformed or unavailable ({type(error).__name__})",
+            }
 
     def get_session_role(self, session_id):
         with self._connection() as connection:

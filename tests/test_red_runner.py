@@ -1,10 +1,14 @@
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
-from red.runner import RunnerError, load_run, main, run_suite
+from backend.blue_client import BlueServiceClient
+from backend.main import create_app
+from blue.service import create_blue_app
+from red.runner import RunnerError, load_run, load_run_bytes, main, run_suite
 
 TEST_AUTH_TOKENS = {
     "red": "runner-red-test-token",
@@ -143,6 +147,9 @@ def test_fixed_runner_scenarios_capture_inputs_http_and_audit(tmp_path):
         assert case["input"]
         assert case["observed"]["http_status"] == case["expected"]["http_status"]
         assert case["audit_evidence"] is not None
+        assert case["input"]["session_id"] == (
+            f"run-{UUID(report['run_id']).hex}-{case['authenticated_role']}"
+        )
     assert cases["allowed-protected-resource"]["observed"]["resource_content_received"] is True
     assert cases["allowed-protected-resource"]["input"]["role"] == "red"
     assert cases["allowed-protected-resource"]["authenticated_role"] == "blue"
@@ -159,6 +166,54 @@ def test_fixed_runner_scenarios_capture_inputs_http_and_audit(tmp_path):
     assert stored["summary"] == report["summary"]
     report_text = (tmp_path / f"{report['run_id']}.json").read_text(encoding="utf-8")
     assert "SYNTHETIC DUMMY CONFIDENTIAL TEST DATA: fake fixture" not in report_text
+
+
+def test_synthetic_gateway_request_to_verified_json_report_workflow(tmp_path):
+    blue_transport = httpx.ASGITransport(app=create_blue_app("blue-test-token"))
+    blue_client = BlueServiceClient(
+        "http://blue.test",
+        "blue-test-token",
+        blue_transport,
+    )
+    gateway_app = create_app(
+        audit_db_path=tmp_path / "workflow-audit.sqlite3",
+        blue_client=blue_client,
+        gateway_caller_tokens=TEST_AUTH_TOKENS,
+    )
+
+    with TestClient(gateway_app) as gateway:
+        def in_process_gateway(request):
+            response = gateway.request(
+                request.method,
+                request.url.path,
+                content=request.content,
+                headers=dict(request.headers),
+            )
+            return httpx.Response(
+                response.status_code,
+                headers=dict(response.headers),
+                content=response.content,
+            )
+
+        report = run_suite(
+            "http://127.0.0.1:8000",
+            transport=httpx.MockTransport(in_process_gateway),
+            results_dir=tmp_path / "workflow-runs",
+            auth_tokens=TEST_AUTH_TOKENS,
+            selected_cases=["denied-red-resource-read"],
+        )
+
+        case = report["cases"][0]
+        assert report["summary"] == {"PASS": 1, "FAIL": 0, "INCONCLUSIVE": 0}
+        assert case["observed"]["http_status"] == 403
+        assert case["audit_evidence"]["event_id"] == case["observed"]["event_id"]
+        assert case["audit_evidence"]["decision"] == "DENY"
+        assert case["audit_evidence"]["observed_outcome"] == "NOT_EXECUTED"
+        assert case["result"] == "PASS"
+        persisted = load_run(report["run_id"], tmp_path / "workflow-runs")
+        assert persisted == report
+        report_bytes = (tmp_path / "workflow-runs" / f"{report['run_id']}.json").read_bytes()
+        assert TEST_AUTH_TOKENS["red"].encode() not in report_bytes
 
 
 def test_runner_cli_passes_custom_results_directory(monkeypatch, tmp_path, capsys):
@@ -265,6 +320,75 @@ def test_runner_rejects_non_loopback_gateway_without_requests(tmp_path):
 def test_load_run_rejects_path_like_identifier(tmp_path):
     with pytest.raises(RunnerError, match="invalid"):
         load_run("..", results_dir=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda report: report.pop("cases"),
+        lambda report: report.update(summary={"PASS": 99, "FAIL": 0, "INCONCLUSIVE": 0}),
+        lambda report: report["cases"][0].update(result="UNVERIFIED"),
+        lambda report: report["cases"][0].update(case_id=[]),
+        lambda report: report["cases"][0].update(result=[]),
+        lambda report: report["cases"][0]["input"].update(session_id=[]),
+        lambda report: report["cases"][0]["audit_evidence"].update(
+            observed_outcome=[]
+        ),
+        lambda report: report["cases"][1]["observed"].update(http_status=200),
+    ],
+)
+def test_load_run_rejects_incomplete_or_inconsistent_report(tmp_path, mutate):
+    report = run_mock_suite(GatewayStub(), tmp_path)
+    malformed = json.loads(json.dumps(report))
+    mutate(malformed)
+
+    with pytest.raises(RunnerError, match="invalid"):
+        load_run_bytes(
+            report["run_id"],
+            json.dumps(malformed).encode("utf-8"),
+        )
+
+
+def test_runner_does_not_overwrite_an_existing_run_report(tmp_path):
+    run_id = str(uuid4())
+    first = run_suite(
+        "http://127.0.0.1:8000",
+        transport=httpx.MockTransport(GatewayStub()),
+        results_dir=tmp_path,
+        auth_tokens=TEST_AUTH_TOKENS,
+        selected_cases=["invalid-test-identifier"],
+        run_id=run_id,
+    )
+    saved_path = tmp_path / f"{run_id}.json"
+    saved_bytes = saved_path.read_bytes()
+
+    duplicate_gateway = GatewayStub()
+    with pytest.raises(RunnerError, match="already has a saved report"):
+        run_suite(
+            "http://127.0.0.1:8000",
+            transport=httpx.MockTransport(duplicate_gateway),
+            results_dir=tmp_path,
+            auth_tokens=TEST_AUTH_TOKENS,
+            selected_cases=["invalid-test-identifier"],
+            run_id=run_id,
+        )
+
+    assert saved_path.read_bytes() == saved_bytes
+    assert duplicate_gateway.calls == []
+    assert first["run_id"] == run_id
+
+
+def test_runner_rejects_empty_case_selection(tmp_path):
+    with pytest.raises(RunnerError, match="at least one"):
+        run_suite(
+            "http://127.0.0.1:8000",
+            transport=httpx.MockTransport(GatewayStub()),
+            results_dir=tmp_path,
+            auth_tokens=TEST_AUTH_TOKENS,
+            selected_cases=[],
+        )
+
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(

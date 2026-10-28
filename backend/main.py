@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+import sqlite3
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -158,8 +159,30 @@ def create_app(
     )
 
     def authenticate_gateway_caller(authorization: str | None = Header(default=None)):
+        def reject_authentication():
+            event = _audit_event(
+                uuid4().hex,
+                "unknown",
+                "authentication.reject",
+                "gateway:authentication",
+                "DENY",
+                "caller credential missing or invalid",
+                "gateway-authentication",
+            )
+            try:
+                store.record(event)
+            except (OSError, sqlite3.DatabaseError) as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail="audit unavailable; request denied",
+                ) from error
+            raise HTTPException(
+                status_code=401,
+                detail="Gateway caller authentication failed",
+            )
+
         if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Gateway caller authentication required")
+            reject_authentication()
 
         configured_tokens = {
             role: token for role, token in caller_tokens.items()
@@ -178,13 +201,13 @@ def create_app(
 
         supplied_token = authorization.removeprefix("Bearer ")
         if not supplied_token.isascii():
-            raise HTTPException(status_code=401, detail="Gateway caller authentication failed")
+            reject_authentication()
         matches = [
             role for role, expected_token in configured_tokens.items()
             if hmac.compare_digest(supplied_token, expected_token)
         ]
         if len(matches) != 1:
-            raise HTTPException(status_code=401, detail="Gateway caller authentication failed")
+            reject_authentication()
         return matches[0]
 
     @asynccontextmanager

@@ -7,7 +7,11 @@ from fastapi.testclient import TestClient
 from backend.main import create_app
 
 
-TEST_CALLER_TOKENS = {"red": "api-test-red-token", "blue": "api-test-blue-token"}
+TEST_CALLER_TOKENS = {
+    "red": "api-test-red-token",
+    "blue": "api-test-blue-token",
+    "admin": "api-test-admin-token",
+}
 
 
 @pytest.fixture
@@ -177,6 +181,32 @@ def test_protected_gateway_routes_and_audit_reads_reject_missing_credentials(mak
         assert client.get("/audit/events").json()["events"] == []
 
 
+def test_failed_authentication_is_audited_without_storing_credentials(make_client):
+    marker = "synthetic-invalid-token-marker"
+    with make_client() as client:
+        response = client.get(
+            "/audit/events",
+            headers={"Authorization": f"Bearer {marker}"},
+        )
+        assert response.status_code == 401
+        admin_events = client.get(
+            "/admin/incidents?limit=200",
+            headers={"Authorization": "Bearer api-test-admin-token"},
+        )
+        assert admin_events.status_code == 200
+        events = [
+            event for event in admin_events.json()["events"]
+            if event["action"] == "authentication.reject"
+        ]
+        assert len(events) == 1
+        assert events[0]["role"] == "unknown"
+        assert events[0]["resource"] == "gateway:authentication"
+        assert events[0]["decision"] == "DENY"
+        assert events[0]["reason"] == "caller credential missing or invalid"
+        assert marker not in response.text
+        assert marker not in str(events[0])
+
+
 def test_audit_api_reports_tampering_and_withholds_unverified_events(make_client, tmp_path):
     with make_client() as client:
         response = client.post("/policy/decide", json={
@@ -198,6 +228,24 @@ def test_audit_api_reports_tampering_and_withholds_unverified_events(make_client
         assert integrity.json()["valid"] is False
         assert client.get("/audit/events").status_code == 503
         assert client.get(f"/audit/events/{event_id}").status_code == 503
+
+
+def test_audit_api_reports_malformed_integrity_data_and_withholds_events(
+    make_client, tmp_path
+):
+    with make_client() as client:
+        connection = sqlite3.connect(tmp_path / "api-audit.sqlite3")
+        try:
+            connection.execute("DROP TABLE audit_integrity")
+            connection.commit()
+        finally:
+            connection.close()
+
+        integrity = client.get("/audit/integrity")
+        assert integrity.status_code == 200
+        assert integrity.json()["valid"] is False
+        assert "malformed or unavailable" in integrity.json()["reason"]
+        assert client.get("/audit/events").status_code == 503
 
 
 def test_audit_feature_routes_are_authenticated_and_role_scoped(make_client):
@@ -335,6 +383,16 @@ def test_audit_failure_returns_503_without_allow(make_client):
         })
         assert response.status_code == 503
         assert "ALLOW" not in response.text
+
+
+def test_failed_authentication_fails_closed_when_audit_write_fails(make_client):
+    with make_client(audit_store=FailingAuditStore()) as client:
+        response = client.get(
+            "/audit/events",
+            headers={"Authorization": "Bearer invalid"},
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"] == "audit unavailable; request denied"
 
 
 def test_sql_metacharacters_are_rejected_by_request_validation(make_client):

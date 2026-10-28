@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from backend import main as gateway_main
 from backend.main import create_app
+from red.runner import TEST_CASES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -218,12 +219,25 @@ def test_configured_anomaly_threshold_is_used_for_role_scoped_detection(app_fact
 def _scenario_runner(gateway_url, *, auth_tokens, selected_cases, results_dir, run_id):
     assert gateway_url == "http://127.0.0.1:8000"
     assert set(auth_tokens) == {"red", "blue"}
+    known_cases = {case["case_id"]: case for case in TEST_CASES}
     report = {
         "run_id": run_id,
         "created_at_utc": "2026-01-01T00:00:00Z",
         "gateway": gateway_url,
-        "cases": [{"case_id": case_id, "result": "PASS"} for case_id in selected_cases],
-        "summary": {"PASS": len(selected_cases), "FAIL": 0, "INCONCLUSIVE": 0},
+        "cases": [{
+            "case_id": case_id,
+            "description": known_cases[case_id]["description"],
+            "endpoint": known_cases[case_id]["endpoint"],
+            "authenticated_role": known_cases[case_id]["caller_role"],
+            "input": known_cases[case_id]["input"],
+            "expected": known_cases[case_id]["expected"],
+            "preflight": None,
+            "observed": None,
+            "audit_evidence": None,
+            "result": "INCONCLUSIVE",
+            "reason": "mock scenario runner did not execute a gateway request",
+        } for case_id in selected_cases],
+        "summary": {"PASS": 0, "FAIL": 0, "INCONCLUSIVE": len(selected_cases)},
     }
     destination = Path(results_dir)
     destination.mkdir(parents=True, exist_ok=True)

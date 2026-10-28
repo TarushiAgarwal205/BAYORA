@@ -110,6 +110,7 @@ _AUDIT_FIELDS = (
     "event_id", "session_id", "role", "action", "resource", "decision", "reason",
     "matched_rule_id", "operation_executed", "observed_outcome", "verification_result",
 )
+_RESULT_STATES = ("PASS", "FAIL", "INCONCLUSIVE")
 
 
 class RunnerError(Exception):
@@ -227,14 +228,18 @@ def _evidence_matches_input(evidence, payload, expected_role=None):
 
 
 def _evaluate(case, observed, audit_evidence):
+    if not isinstance(observed, dict):
+        return "INCONCLUSIVE"
     if not _evidence_matches_input(
         audit_evidence, case["input"], expected_role=case.get("caller_role")
     ):
         return "INCONCLUSIVE"
 
+    observed_outcome = audit_evidence.get("observed_outcome")
     if (
         audit_evidence.get("operation_executed") is None
-        or audit_evidence.get("observed_outcome") in {"PENDING", "UNKNOWN"}
+        or observed_outcome == "PENDING"
+        or observed_outcome == "UNKNOWN"
     ):
         return "INCONCLUSIVE"
 
@@ -249,6 +254,15 @@ def _evaluate(case, observed, audit_evidence):
         return "FAIL"
 
     if observed.get("http_status") != expected["http_status"]:
+        return "FAIL"
+    for field in ("decision", "observed_outcome", "verification_result"):
+        if observed.get(field) is not None and observed[field] != expected[field]:
+            return "FAIL"
+    observed_execution = observed.get("operation_executed")
+    if (
+        observed_execution is not None
+        and observed_execution != bool(expected["operation_executed"])
+    ):
         return "FAIL"
 
     if case["case_id"] == "allowed-protected-resource":
@@ -335,6 +349,17 @@ def _run_case(client, case, auth_tokens):
     return result
 
 
+def _case_for_run(case, run_id):
+    session_id = f"run-{UUID(run_id).hex}-{case['caller_role']}"
+    correlated = {**case, "input": {**case["input"], "session_id": session_id}}
+    if "preflight_input" in case:
+        correlated["preflight_input"] = {
+            **case["preflight_input"],
+            "session_id": session_id,
+        }
+    return correlated
+
+
 def run_suite(
     gateway_url="http://127.0.0.1:8000",
     *,
@@ -354,6 +379,8 @@ def run_suite(
     else:
         selected_ids = set(selected_cases)
         known_ids = {case["case_id"] for case in TEST_CASES}
+        if not selected_ids:
+            raise RunnerError("at least one test case must be selected")
         if selected_ids - known_ids:
             raise RunnerError("one or more selected test case IDs are invalid")
         cases_to_run = tuple(
@@ -367,6 +394,15 @@ def run_suite(
             raise RunnerError("run ID is invalid") from error
     else:
         run_id = str(uuid4())
+    directory = Path(results_dir) if results_dir is not None else RESULTS_DIR
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise RunnerError("results directory could not be prepared") from error
+    result_path = directory / f"{run_id}.json"
+    if result_path.exists():
+        raise RunnerError("run ID already has a saved report")
+
     client = httpx.Client(
         base_url=base_url,
         transport=transport,
@@ -377,7 +413,7 @@ def run_suite(
     try:
         with client:
             cases = [
-                _run_case(client, case, selected_auth_tokens)
+                _run_case(client, _case_for_run(case, run_id), selected_auth_tokens)
                 for case in cases_to_run
             ]
     except httpx.RequestError as error:
@@ -394,11 +430,13 @@ def run_suite(
         },
     }
 
-    directory = Path(results_dir) if results_dir is not None else RESULTS_DIR
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{run_id}.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    try:
+        with result_path.open("x", encoding="utf-8") as result_file:
+            json.dump(report, result_file, indent=2, sort_keys=True)
+    except FileExistsError as error:
+        raise RunnerError("run ID already has a saved report") from error
+    except OSError as error:
+        raise RunnerError("run report could not be saved") from error
     return report
 
 
@@ -430,9 +468,178 @@ def load_run_bytes(run_id, raw_report):
     except (AttributeError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RunnerError("run result could not be read") from error
 
-    if not isinstance(report, dict) or report.get("run_id") != normalized_id:
+    if not _is_valid_run_report(report, normalized_id):
         raise RunnerError("run result is invalid")
     return report
+
+
+def _is_valid_run_report(report, normalized_id):
+    if not isinstance(report, dict) or report.get("run_id") != normalized_id:
+        return False
+    if not isinstance(report.get("created_at_utc"), str):
+        return False
+    try:
+        created_at = datetime.fromisoformat(
+            report["created_at_utc"].replace("Z", "+00:00")
+        )
+    except ValueError:
+        return False
+    if created_at.tzinfo is None:
+        return False
+    try:
+        if _local_gateway_url(report.get("gateway")) != report["gateway"]:
+            return False
+    except (RunnerError, TypeError):
+        return False
+
+    cases = report.get("cases")
+    summary = report.get("summary")
+    if not isinstance(cases, list) or not cases or not isinstance(summary, dict):
+        return False
+    if set(summary) != set(_RESULT_STATES) or any(
+        not isinstance(summary[state], int)
+        or isinstance(summary[state], bool)
+        or summary[state] < 0
+        for state in _RESULT_STATES
+    ):
+        return False
+
+    known_cases = {case["case_id"] for case in TEST_CASES}
+    seen_cases = set()
+    observed_counts = {state: 0 for state in _RESULT_STATES}
+    for case in cases:
+        if not isinstance(case, dict):
+            return False
+        case_id = case.get("case_id")
+        result = case.get("result")
+        if (
+            not isinstance(case_id, str)
+            or case_id not in known_cases
+            or case_id in seen_cases
+            or not isinstance(result, str)
+            or result not in observed_counts
+            or not isinstance(case.get("endpoint"), str)
+            or not isinstance(case.get("input"), dict)
+            or not isinstance(case.get("expected"), dict)
+            or not isinstance(case.get("description"), str)
+            or case.get("reason") is not None
+            and not isinstance(case["reason"], str)
+            or case.get("observed") is not None
+            and not isinstance(case["observed"], dict)
+            or case.get("audit_evidence") is not None
+            and not isinstance(case["audit_evidence"], dict)
+            or case.get("preflight") is not None
+            and not isinstance(case["preflight"], dict)
+        ):
+            return False
+        expected_case = next(
+            item for item in TEST_CASES if item["case_id"] == case_id
+        )
+        expected = case["expected"]
+        if (
+            set(expected)
+            != {
+                "http_status",
+                "decision",
+                "operation_executed",
+                "observed_outcome",
+                "verification_result",
+            }
+            or not isinstance(expected["http_status"], int)
+            or isinstance(expected["http_status"], bool)
+            or not isinstance(expected["decision"], str)
+            or expected["decision"] not in {"ALLOW", "DENY"}
+            or not isinstance(expected["operation_executed"], int)
+            or isinstance(expected["operation_executed"], bool)
+            or expected["operation_executed"] not in {0, 1}
+            or not isinstance(expected["observed_outcome"], str)
+            or expected["observed_outcome"] not in {"NOT_EXECUTED", "SUCCEEDED"}
+            or not isinstance(expected["verification_result"], str)
+            or expected["verification_result"] not in {"NOT_VERIFIED", "VERIFIED"}
+        ):
+            return False
+        case_input = case["input"]
+        session_id = case_input.get("session_id")
+        if (
+            not isinstance(session_id, str)
+            or not all(
+                isinstance(case_input.get(field), str)
+                for field in ("role", "action", "resource")
+            )
+            or case_input.get("role") not in {"red", "blue"}
+            or "prompt" in case_input
+            and not isinstance(case_input["prompt"], str)
+        ):
+            return False
+        correlated_prefix = f"run-{UUID(normalized_id).hex}-"
+        correlated_session = session_id.startswith(correlated_prefix)
+        authenticated_role = case.get("authenticated_role")
+        if correlated_session:
+            if (
+                authenticated_role != expected_case["caller_role"]
+                or session_id != f"{correlated_prefix}{authenticated_role}"
+                or case["description"] != expected_case["description"]
+                or case["endpoint"] != expected_case["endpoint"]
+                or expected != expected_case["expected"]
+                or {
+                    key: value for key, value in case_input.items()
+                    if key != "session_id"
+                } != {
+                    key: value for key, value in expected_case["input"].items()
+                    if key != "session_id"
+                }
+            ):
+                return False
+        elif authenticated_role is not None and authenticated_role not in {"red", "blue"}:
+            return False
+
+        if (
+            correlated_session
+            and case.get("observed") is not None
+            and bool(case.get("preflight"))
+            != bool(expected_case.get("preflight"))
+        ):
+            return False
+        if case.get("preflight") is not None and case.get("observed") is not None:
+            preflight_input = case.get("preflight")
+            preflight_evidence = preflight_input.get("audit_evidence")
+            preflight_role = (
+                authenticated_role
+                if authenticated_role is not None
+                else (
+                    preflight_evidence.get("role")
+                    if isinstance(preflight_evidence, dict)
+                    else None
+                )
+            )
+            if (
+                preflight_input.get("http_status") != 200
+                or preflight_input.get("decision") != "DENY"
+                or not _evidence_matches_input(
+                    preflight_evidence,
+                    case_input,
+                    expected_role=preflight_role,
+                )
+                or preflight_evidence.get("decision") != "DENY"
+                or preflight_evidence.get("operation_executed") != 0
+                or preflight_evidence.get("observed_outcome") != "NOT_EXECUTED"
+            ):
+                return False
+
+        evaluation_role = authenticated_role
+        audit_evidence = case.get("audit_evidence")
+        if evaluation_role is None and isinstance(audit_evidence, dict):
+            evaluation_role = audit_evidence.get("role")
+        evaluation_case = {**case, "caller_role": evaluation_role}
+        if _evaluate(
+            evaluation_case,
+            case.get("observed"),
+            audit_evidence,
+        ) != result:
+            return False
+        seen_cases.add(case_id)
+        observed_counts[result] += 1
+    return summary == observed_counts
 
 
 def main(argv=None):

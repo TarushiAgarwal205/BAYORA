@@ -6,7 +6,9 @@ import json
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -503,13 +505,25 @@ def check_network_peers(containers, config):
         network_name = (network_config or {}).get("name") or f"{project}_{alias}"
         inspected = run(["docker", "network", "inspect", network_name])
         try:
-            network = json.loads(inspected.stdout)[0] if inspected.returncode == 0 else None
+            networks = json.loads(inspected.stdout) if inspected.returncode == 0 else None
+            network = networks[0] if isinstance(networks, list) and len(networks) == 1 else None
         except (json.JSONDecodeError, IndexError, TypeError):
             network = None
-        if network is None:
+        if not isinstance(network, dict):
             emit("UNVERIFIED", f"{alias} peer inspection", "Docker could not inspect the resolved network")
             continue
-        attached = network.get("Containers") or {}
+        attached = network.get("Containers")
+        if (
+            not isinstance(attached, dict)
+            or any(
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("Name"), str)
+                or not entry["Name"]
+                for entry in attached.values()
+            )
+        ):
+            emit("UNVERIFIED", f"{alias} peer inspection", "Docker returned malformed network peer data")
+            continue
         peers = {
             entry.get("Name", "")
             for entry in attached.values()
@@ -723,7 +737,10 @@ def classify_red_blue_result(result, *, blue_health_reachable=False):
     if not isinstance(result, dict):
         return "UNVERIFIED", "probe result is malformed; network isolation was not established"
     if "status" in result:
-        return "FAIL", f"Blue returned HTTP {result['status']} to Red; network path is reachable"
+        status = result["status"]
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            return "FAIL", f"Blue returned HTTP {status} to Red; network path is reachable"
+        return "UNVERIFIED", "probe returned a malformed HTTP status; network isolation was not established"
     if result.get("error") == "unreachable":
         if not blue_health_reachable:
             return (
@@ -982,15 +999,33 @@ def main():
     if (args.egress_probe_ip is not None or args.egress_probe_port is not None) and not args.probe:
         parser.error("--egress-probe-ip/--egress-probe-port require --probe")
 
+    COUNTS.update({status: 0 for status in COUNTS})
+    run_id = str(uuid4())
+    print("RUN " + json.dumps({
+        "run_id": run_id,
+        "started_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "target": "local Compose project",
+        "compose_file": "compose.yaml",
+        "probe_enabled": args.probe,
+        "egress_probe": (
+            {
+                "destination_ip": args.egress_probe_ip,
+                "destination_port": args.egress_probe_port,
+            }
+            if args.egress_probe_ip is not None or args.egress_probe_port is not None
+            else None
+        ),
+    }, sort_keys=True))
+
     if shutil.which("docker") is None:
         emit("UNVERIFIED", "Docker checks", "Docker CLI unavailable")
-        print(f"SUMMARY {COUNTS}")
+        print("SUMMARY " + json.dumps({"run_id": run_id, "counts": COUNTS}, sort_keys=True))
         return 2
 
     config = load_compose_config()
     if config is None:
         emit("UNVERIFIED", "Compose configuration", "config could not be resolved; verify required local .env settings without printing them")
-        print(f"SUMMARY {COUNTS}")
+        print("SUMMARY " + json.dumps({"run_id": run_id, "counts": COUNTS}, sort_keys=True))
         return 2
     check_static(config)
     containers = inspect_containers(config)
@@ -1002,7 +1037,7 @@ def main():
             egress_probe_port=args.egress_probe_port,
         )
 
-    print(f"SUMMARY {COUNTS}")
+    print("SUMMARY " + json.dumps({"run_id": run_id, "counts": COUNTS}, sort_keys=True))
     if COUNTS["FAIL"]:
         return 1
     if COUNTS["UNVERIFIED"]:

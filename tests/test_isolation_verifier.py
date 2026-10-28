@@ -383,10 +383,48 @@ def test_protected_network_peer_check_flags_unlisted_and_misplaced_containers(mo
 
 
 @pytest.mark.parametrize(
+    ("network_data", "expected_detail"),
+    [
+        ([{"Containers": []}], "Docker returned malformed network peer data"),
+        ([{"Containers": {"peer-id": {}}}], "Docker returned malformed network peer data"),
+        ([{"Containers": {"peer-id": {"Name": None}}}], "Docker returned malformed network peer data"),
+        ([{"Containers": {}}, {"Containers": {}}], "Docker could not inspect the resolved network"),
+    ],
+)
+def test_network_peer_check_marks_malformed_peer_data_unverified(
+    monkeypatch, network_data, expected_detail
+):
+    results = []
+    monkeypatch.setattr(
+        verify_isolation,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(network_data),
+        ),
+    )
+    monkeypatch.setattr(verify_isolation, "emit", lambda *result: results.append(result))
+
+    verify_isolation.check_network_peers(
+        [],
+        {"name": "bayora", "networks": {"blue-gateway": {}}},
+    )
+
+    assert results == [(
+        "UNVERIFIED",
+        "blue-gateway peer inspection",
+        expected_detail,
+    )]
+
+
+@pytest.mark.parametrize(
     ("probe_result", "blue_health_reachable", "expected_status"),
     [
         ({"status": 200}, True, "FAIL"),
         ({"status": 403}, True, "FAIL"),
+        ({"status": None}, True, "UNVERIFIED"),
+        ({"status": "200"}, True, "UNVERIFIED"),
+        ({"status": True}, True, "UNVERIFIED"),
         ({"error": "unreachable"}, True, "PASS"),
         ({"error": "unreachable"}, False, "UNVERIFIED"),
         ({"error": "timeout"}, True, "UNVERIFIED"),
@@ -912,3 +950,34 @@ def test_llm_egress_probe_rejects_invalid_or_nonpublic_destinations(
     )
 
     assert results[0][0] == "UNVERIFIED"
+
+
+def test_main_emits_unique_run_metadata_and_resets_counts(monkeypatch, capsys):
+    monkeypatch.setattr(verify_isolation.sys, "argv", ["verify-isolation"])
+    monkeypatch.setattr(verify_isolation.shutil, "which", lambda _name: "docker")
+    monkeypatch.setattr(verify_isolation, "load_compose_config", lambda: None)
+
+    run_ids = []
+    summaries = []
+    for _ in range(2):
+        assert verify_isolation.main() == 2
+        output = capsys.readouterr().out.splitlines()
+        run = json.loads(next(line.removeprefix("RUN ") for line in output if line.startswith("RUN ")))
+        summary = json.loads(next(
+            line.removeprefix("SUMMARY ")
+            for line in output
+            if line.startswith("SUMMARY ")
+        ))
+        run_ids.append(run["run_id"])
+        summaries.append(summary)
+        assert run["target"] == "local Compose project"
+        assert run["compose_file"] == "compose.yaml"
+        assert run["probe_enabled"] is False
+        assert run["egress_probe"] is None
+        assert run["started_at_utc"].endswith("Z")
+
+    assert run_ids[0] != run_ids[1]
+    assert summaries == [
+        {"run_id": run_id, "counts": {"FAIL": 0, "INFO": 0, "PASS": 0, "UNVERIFIED": 1}}
+        for run_id in run_ids
+    ]

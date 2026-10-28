@@ -208,6 +208,18 @@ def test_integrity_chain_tracks_each_operation_revision(tmp_path):
     }
 
 
+def test_initialized_empty_store_verifies_zero_length_chain(tmp_path):
+    store = AuditStore(tmp_path / "empty-audit.sqlite3")
+    store.initialize()
+
+    assert store.verify_integrity() == {
+        "valid": True,
+        "checked_entries": 0,
+        "checked_events": 0,
+        "reason": "integrity chain and external checkpoint verified",
+    }
+
+
 def test_integrity_verification_survives_store_reopen(tmp_path):
     database = tmp_path / "persistent-audit.sqlite3"
     first = AuditStore(database)
@@ -266,6 +278,49 @@ def test_integrity_verification_detects_removed_chain_entry(tmp_path):
     result = store.verify_integrity()
     assert result["valid"] is False
     assert result["reason"] == "integrity sequence is incomplete"
+
+
+def test_integrity_verification_rejects_malformed_snapshot_json(tmp_path):
+    database = tmp_path / "malformed-snapshot.sqlite3"
+    store = AuditStore(database)
+    store.initialize()
+    store.record(event("malformed-snapshot"))
+
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE audit_integrity SET snapshot_json = ? WHERE event_id = ?",
+            ("not-json", "malformed-snapshot"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    result = store.verify_integrity()
+    assert result["valid"] is False
+    assert result["reason"] == "integrity snapshot is invalid"
+
+
+def test_integrity_verification_reports_missing_integrity_table_as_invalid(tmp_path):
+    database = tmp_path / "missing-integrity-table.sqlite3"
+    store = AuditStore(database, checkpoint_key=b"t" * 32)
+    store.initialize()
+    store.record(event("table-event"))
+
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("DROP TABLE audit_integrity")
+        connection.commit()
+    finally:
+        connection.close()
+
+    result = store.verify_integrity()
+    assert result == {
+        "valid": False,
+        "checked_entries": 0,
+        "checked_events": 0,
+        "reason": "audit integrity data is malformed or unavailable (OperationalError)",
+    }
 
 
 def test_integrity_verification_detects_reordered_chain_entries(tmp_path):

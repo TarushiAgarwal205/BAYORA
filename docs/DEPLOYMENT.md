@@ -57,6 +57,12 @@ docker compose logs --tail=100 gateway blue llm egress-proxy
 venv\Scripts\python.exe -m scripts.verify_isolation --probe
 ```
 
+The verifier prints a JSON `RUN` record with a unique run ID, UTC start time,
+Compose target/file, probe mode, and optional controlled egress destination,
+followed by a `SUMMARY` record carrying the same ID and per-status counts.
+Capture its output with the deployment evidence; the verifier does not persist
+a report automatically.
+
 The verifier does not start or stop services. Require expected network
 attachments, Gateway-to-Blue/LLM health success, no direct Red-to-Blue path,
 and no unexpected peer on protected networks. A `bayora-port-test` peer has
